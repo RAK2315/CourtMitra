@@ -1,116 +1,172 @@
-# ⚖️ CourtMitra — AI Legal Companion for Every Indian
+# ⚖️ CourtMitra
+### AI Legal Companion for Every Indian
 
-> *Justice, Explained Simply*
+> *Upload any court judgment PDF. Get a plain-language explanation in seconds.*
 
-CourtMitra makes Indian court judgments understandable to ordinary citizens.
-Upload any Supreme Court or High Court judgment PDF and get:
-
-- **Plain-language summary** anyone can understand
-- **Legal entity extraction** — acts, IPC sections, amounts, dates
-- **Visual reasoning flowchart** — how the judge arrived at the decision
-- **Similar case finder** — from your indexed document library
-- **Q&A** — ask any question about the judgment
+**Live Demo:** [courtmitra.streamlit.app](https://courtmitra.streamlit.app)
 
 ---
 
-## 🚀 Quick Start
+## What is CourtMitra?
 
-### 1. Install dependencies
+India has 5 crore pending court cases. When a judgment comes out — even one that affects someone's land, job, or custody — it's written in dense legal English, 50–200 pages long, full of Latin phrases and case citations that nobody understands.
+
+A first-generation litigant has two options:
+- Pay ₹5,000+ for a lawyer to explain it
+- Understand nothing and miss their next step deadline
+
+**CourtMitra is option 3.** Free, instant, in their language.
+
+---
+
+## What It Does
+
+Upload any Supreme Court or High Court judgment PDF and get:
+
+| Feature | What you see |
+|---|---|
+| **Plain Summary** | 3–4 sentences anyone can understand, using real names |
+| **Legal Entities** | Acts cited, IPC sections, case numbers, amounts, dates — extracted without AI |
+| **Reasoning Chain** | Visual flowchart of how the judge arrived at the decision |
+| **Similar Cases** | Other judgments in your database that are structurally similar |
+| **Q&A** | Ask any question — answers come only from the document, no hallucination |
+| **Hindi Output** | Toggle the entire output to Hindi |
+
+---
+
+## How to Run Locally
+
+### Step 1 — Clone the repo
 ```bash
-bash setup.sh
+git clone https://github.com/RAK2315/CourtMitra.git
+cd CourtMitra
 ```
 
-### 2. Set your API key
+### Step 2 — Install dependencies
 ```bash
-cp .env.example .env
-# Edit .env and add your Groq API key (free at console.groq.com)
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
-### 3. Run
+### Step 3 — Add your API key
+Create a `.env` file in the root folder:
+```
+GROQ_API_KEY=your_key_here
+```
+Get a free key at [console.groq.com](https://console.groq.com) — takes 2 minutes, no credit card.
+
+### Step 4 — Run
 ```bash
 streamlit run app.py
 ```
 
 ---
 
-## 🏗️ Architecture
+## Project Structure
 
 ```
-PDF Upload
-    │
-    ▼
-PyMuPDF Extraction  →  Legal-Aware Chunker
-    │
-    ▼
-sentence-transformers Embeddings  →  ChromaDB Vector Store
-    │
-    ▼
-spaCy Entity Extractor  (IPC sections, acts, amounts, dates)
-    │
-    ▼
-Groq LLM (llama3-70b)  ←  Retrieved chunks (NOT full text)
-    │
-    ├──► Plain Language Summary
-    ├──► Reasoning Chain → HTML Flowchart
-    └──► Q&A Engine
-```
-
-**The LLM is just one organ. The retrieval, extraction, and graph logic is our code.**
-
----
-
-## 📁 Project Structure
-
-```
-courtmitra/
-├── app.py                  # Streamlit UI
+CourtMitra/
+├── app.py                      # Main Streamlit app
 ├── requirements.txt
-├── setup.sh
-├── .env.example
+├── packages.txt                # Streamlit Cloud system deps
+├── .env.example                # Template for API key
+│
 ├── core/
-│   ├── pdf_extractor.py    # PyMuPDF text extraction
-│   ├── chunker.py          # Legal-aware section splitter
-│   ├── embedder.py         # ChromaDB + sentence-transformers
-│   ├── entity_extractor.py # spaCy + regex legal NER
-│   ├── llm_handler.py      # Groq API (summarize, reasoning, Q&A)
-│   ├── flowchart.py        # Reasoning chain HTML renderer
-│   └── translator.py       # Hindi translation
-├── static/
-│   └── style.css           # Custom dark legal UI
-├── data/sample_pdfs/       # Pre-load judgment PDFs here
-└── vectorstore/            # ChromaDB persists here (auto-created)
+│   ├── pdf_extractor.py        # Extracts text from PDF using PyMuPDF
+│   ├── chunker.py              # Splits judgment by legal sections (FACTS/ISSUES/ORDER)
+│   ├── embedder.py             # Embeds chunks into ChromaDB vector store
+│   ├── entity_extractor.py     # Extracts IPC sections, acts, dates using spaCy + regex
+│   ├── llm_handler.py          # Calls Groq API for summary, reasoning chain, Q&A
+│   ├── flowchart.py            # Builds visual reasoning flowchart from LLM output
+│   └── translator.py           # Translates output to Hindi
+│
+├── pages/
+│   └── 2_About.py              # About page explaining architecture
+│
+└── static/
+    └── style.css               # Custom dark legal UI theme
 ```
 
 ---
 
-## 🆓 All Free APIs & Tools
+## Architecture — Why This Is Not an API Wrapper
 
-| Tool | Purpose | Cost |
-|------|---------|------|
-| Groq (llama3-70b) | LLM backbone | Free tier |
-| sentence-transformers | Local embeddings | Free (local) |
-| ChromaDB | Vector database | Free (local) |
-| spaCy | NLP entity extraction | Free (local) |
-| deep-translator | Hindi translation | Free |
-| PyMuPDF | PDF extraction | Free |
+Most "legal AI" projects at hackathons are just `ChatGPT.summarize(pdf)`. CourtMitra is different:
 
-**Total API cost: ₹0**
+```
+PDF
+ │
+ ├─► PyMuPDF extracts raw text
+ │
+ ├─► Legal-aware chunker splits by section headers
+ │   (FACTS / ISSUES / ARGUMENTS / JUDGMENT / ORDER)
+ │   — NOT generic 500-token windows
+ │
+ ├─► sentence-transformers embeds chunks locally
+ │   → stored in ChromaDB (runs on your machine, free)
+ │
+ ├─► spaCy + regex extracts legal entities
+ │   (IPC sections, acts, case numbers, amounts, dates)
+ │   — zero LLM involvement here, zero hallucination possible
+ │
+ ├─► Semantic search retrieves top relevant chunks
+ │
+ └─► Groq LLM receives ONLY retrieved chunks + prompt
+     → outputs summary, reasoning steps, answers
+     (LLM never sees full document, can't hallucinate case facts)
+
+     ↓
+     Reasoning steps → our graph code → visual flowchart
+     (GPT alone cannot produce this)
+```
+
+**The LLM touches ~20% of the pipeline. We built the other 80%.**
 
 ---
 
-## 🎯 SDG Alignment
+## Tech Stack — Total Cost ₹0
+
+| Tool | Purpose |
+|---|---|
+| Groq (llama-3.3-70b) | LLM — free tier, extremely fast |
+| sentence-transformers | Local embeddings — runs on your machine |
+| ChromaDB | Vector database — local, no cloud needed |
+| spaCy | Legal NER — local |
+| PyMuPDF | PDF text extraction |
+| deep-translator | Hindi translation — free |
+| Streamlit | Frontend |
+
+---
+
+## Supported Documents
+
+Works best with:
+- Supreme Court of India judgments
+- High Court judgments
+- District Court orders
+- Consumer forum rulings
+- Labour tribunal orders
+
+Download free PDFs from:
+- [scholar.google.com](https://scholar.google.com) → Case law tab
+- [sci.gov.in/judgments](https://sci.gov.in/judgments)
+
+---
+
+## SDG Alignment
 
 - **SDG 16** — Peace, Justice and Strong Institutions
-- **SDG 10** — Reduced Inequalities  
+- **SDG 10** — Reduced Inequalities
 - **SDG 4** — Quality Education
 
 ---
 
-## ⚠️ Disclaimer
+## Built For
 
-CourtMitra is for **informational and educational purposes only**.
-It does not constitute legal advice. Always consult a qualified lawyer for advice specific to your situation.
+**Innovate Bharat Hackathon 2026**
+Sharda School of Computing Science & Engineering, Greater Noida
+Track: AI & Intelligent Systems (AIIS)
 
 ---
 
-*Built for Innovate Bharat Hackathon 2026 — Sharda University*
+> ⚠️ CourtMitra is for informational purposes only and does not constitute legal advice. Always consult a qualified lawyer for advice specific to your situation.

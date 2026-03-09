@@ -44,19 +44,11 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 🗂️ Settings")
 
-    # API key loaded silently from .env only
     if not os.getenv("GROQ_API_KEY"):
         st.markdown("""
         <div style='background:#1a0a00;border:1px solid #c9a84c;border-radius:6px;
             padding:10px 12px;font-size:12px;color:#c9a84c;margin-bottom:12px;'>
             ⚠️ Add <b>GROQ_API_KEY</b> to your <b>.env</b> file to begin.
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style='background:#0d2e1a;border:1px solid #22c55e;border-radius:6px;
-            padding:10px 12px;font-size:12px;color:#22c55e;margin-bottom:12px;'>
-            ✅ API key loaded from .env
         </div>
         """, unsafe_allow_html=True)
 
@@ -340,6 +332,8 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
     # ── TAB 4: Similar Cases ──────────────────────────────────────────────────
     with tab4:
         st.markdown('<div class="section-header">Similar Cases in Database</div>', unsafe_allow_html=True)
+        st.markdown("<small style='color:#555'>Cases in your local database that are structurally similar to this judgment.</small>", unsafe_allow_html=True)
+        st.markdown("")
 
         summary_text = summary.get("plain_summary", text[:500])
         similar = find_similar_cases(summary_text, exclude_doc=doc_name, top_k=3)
@@ -347,23 +341,33 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
         if similar:
             for case in similar:
                 similarity_pct = int(case["similarity"] * 100)
-                bar_color = "#22c55e" if similarity_pct > 70 else "#f59e0b" if similarity_pct > 50 else "#ef4444"
+                bar_color = "#c9a84c" if similarity_pct > 70 else "#22c55e"
+                display_name = case["doc_name"].replace("_", " ").strip()
+                excerpt = case["excerpt"][:220]
+                if len(case["excerpt"]) > 220:
+                    excerpt = excerpt[:excerpt.rfind(" ")] + "..."
                 st.markdown(f"""
                 <div class="similar-case-card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                        <span style="font-family:\'Playfair Display\',serif;color:#d4c5a9;font-size:1rem;">
-                            📄 {case["doc_name"]}
+                    <div style="display:flex;justify-content:space-between;
+                        align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                        <span style="font-family:'Playfair Display',serif;
+                            color:#d4c5a9;font-size:1rem;">
+                            📄 {display_name}
                         </span>
-                        <span style="font-family:\'JetBrains Mono\',monospace;font-size:0.75rem;
-                            color:{bar_color};">
-                            {similarity_pct}% similar
+                        <span style="background:{bar_color}22;color:{bar_color};
+                            font-family:'JetBrains Mono',monospace;font-size:0.72rem;
+                            padding:3px 10px;border-radius:20px;border:1px solid {bar_color};
+                            white-space:nowrap;">
+                            {similarity_pct}% match
                         </span>
                     </div>
-                    <div style="background:#1a2a3a;border-radius:3px;height:4px;margin-bottom:10px;">
-                        <div style="background:{bar_color};width:{similarity_pct}%;height:100%;border-radius:3px;"></div>
+                    <div style="background:#0a1020;border-radius:3px;height:3px;margin-bottom:12px;">
+                        <div style="background:{bar_color};width:{similarity_pct}%;
+                            height:100%;border-radius:3px;"></div>
                     </div>
-                    <div style="font-size:12px;color:#7a8fa6;font-style:italic;">
-                        {case["excerpt"]}
+                    <div style="font-size:12px;color:#7a8fa6;line-height:1.7;
+                        font-style:italic;word-break:break-word;">
+                        "{excerpt}"
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
