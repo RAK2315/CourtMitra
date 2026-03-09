@@ -144,7 +144,7 @@ components.html("""
   <div class="out"><div class="out-label">🔍 SIMILAR CASES</div></div>
   <div class="out"><div class="out-label">💬 Q&amp;A</div></div>
 </div>
-""", height=300, scrolling=False)
+""", height=380, scrolling=False)
 
 st.markdown("---")
 

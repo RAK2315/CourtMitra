@@ -5,6 +5,8 @@
 
 **Live Demo:** [courtmitra.streamlit.app](https://courtmitra.streamlit.app)
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://courtmitra.streamlit.app)
+
 ---
 
 ## What is CourtMitra?
