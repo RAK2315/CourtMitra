@@ -17,17 +17,36 @@ def get_nlp():
     return _nlp
 
 
+# Words that spaCy wrongly classifies as persons or orgs
+PERSON_NOISE = {
+    "order", "rule", "section", "article", "act", "court", "bench",
+    "appellant", "respondent", "petitioner", "plaintiff", "defendant",
+    "judgment", "decree", "appeal", "petition", "hon", "honourable",
+    "j.", "j", "cpc", "ipc", "crpc", "sub-rule", "clause", "schedule",
+    "xli", "xlii", "xliii", "order xli", "per contra",
+}
+
+ORG_NOISE = {
+    "rs.", "rs", "inr", "₹", "rule", "order", "section", "sub-rule",
+    "xli", "xlii", "review petition", "civil appeal", "writ petition",
+}
+
 # Indian legal patterns
 PATTERNS = {
     "case_numbers": [
-        r'\b(Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
-        r'W\.P\.|C\.A\.|Crl\.A\.)[\s\(]*No[\s\.]*\d+[\s/\-]*(?:of\s*)?\d{4}\b',
-        r'\b\d{1,5}\s*/\s*\d{4}\b',
+        # Standard: Civil Appeal Nos. 5168-5169 of 2011
+        r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
+        r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|'
+        r'Civil Suit|Criminal Case)\s*(?:Nos?\.?)?\s*[\d\-]+(?:\s*(?:of|OF)\s*\d{4})?\b',
+        # Short: 3075/2024 or 80/1996
+        r'\b\d{1,6}\s*/\s*\d{4}\b',
+        # INSC citations: 2026 INSC 211
+        r'\b\d{4}\s+INSC\s+\d+\b',
     ],
     "ipc_sections": [
         r'\bSection\s+\d+[A-Z]?\s*(?:and\s+\d+[A-Z]?)?\s+(?:of\s+)?(?:IPC|I\.P\.C\.|Indian Penal Code)\b',
         r'\bIPC\s+[Ss]ection\s+\d+[A-Z]?\b',
-        r'\bunder\s+[Ss]ection\s+\d+[A-Z]?\b',
+        r'\bunder\s+[Ss]ections?\s+\d+[A-Z]?(?:\s*(?:and|,)\s*\d+[A-Z]?)*\s+(?:of\s+the\s+)?IPC\b',
     ],
     "acts_cited": [
         r'(?:The\s+)?[A-Z][A-Za-z\s]+Act,?\s*\d{4}',
@@ -37,9 +56,10 @@ PATTERNS = {
         r'Indian Evidence Act',
         r'Transfer of Property Act',
         r'Hindu Marriage Act',
+        r'Order\s+XLI(?:\s+Rule\s+\d+)?',  # CPC Order citations
     ],
     "monetary_amounts": [
-        r'Rs\.?\s*[\d,]+(?:\.\d{2})?(?:\s*(?:lakhs?|crores?|thousands?))?',
+        r'Rs\.?\s*[\d,]+(?:\.\d{2})?(?:/-)?\s*(?:\(?rupees?\)?)?(?:\s*(?:lakhs?|crores?|thousands?))?',
         r'₹\s*[\d,]+(?:\.\d{2})?',
         r'INR\s*[\d,]+',
     ],
@@ -51,23 +71,54 @@ PATTERNS = {
 }
 
 
+def _is_noise(text: str, noise_set: set) -> bool:
+    """Check if extracted entity is junk."""
+    t = text.strip().lower()
+    if len(t) <= 2:
+        return True
+    if any(n in t for n in noise_set):
+        return True
+    # Filter things starting with digits (Rs amounts misclassified as orgs)
+    if re.match(r'^\d', t):
+        return True
+    return False
+
+
 def extract_entities(text: str) -> Dict:
     """Extract legal entities from judgment text."""
     nlp = get_nlp()
-    doc = nlp(text[:100000])  # spaCy limit
+    doc = nlp(text[:100000])
 
-    # NER from spaCy
-    persons = list(set([
-        ent.text.strip() for ent in doc.ents
-        if ent.label_ == "PERSON" and len(ent.text.strip()) > 3
-    ]))[:8]
+    # NER from spaCy — with noise filtering
+    persons = []
+    seen_persons = set()
+    for ent in doc.ents:
+        if ent.label_ == "PERSON":
+            name = ent.text.strip()
+            name_lower = name.lower()
+            if (len(name) > 3
+                    and name_lower not in seen_persons
+                    and not _is_noise(name, PERSON_NOISE)
+                    and not any(c.isdigit() for c in name)):
+                seen_persons.add(name_lower)
+                persons.append(name)
+                if len(persons) >= 8:
+                    break
 
-    orgs = list(set([
-        ent.text.strip() for ent in doc.ents
-        if ent.label_ == "ORG" and len(ent.text.strip()) > 3
-    ]))[:8]
+    orgs = []
+    seen_orgs = set()
+    for ent in doc.ents:
+        if ent.label_ == "ORG":
+            org = ent.text.strip()
+            org_lower = org.lower()
+            if (len(org) > 4
+                    and org_lower not in seen_orgs
+                    and not _is_noise(org, ORG_NOISE)):
+                seen_orgs.add(org_lower)
+                orgs.append(org)
+                if len(orgs) >= 8:
+                    break
 
-    # Pattern-based extraction
     results = {
         "persons_mentioned": persons,
         "organizations": orgs,
@@ -105,10 +156,10 @@ def extract_entities(text: str) -> Dict:
             cleaned = []
             for item in results[key]:
                 item_clean = item.strip()
-                if item_clean and item_clean.lower() not in seen:
+                if item_clean and item_clean.lower() not in seen and len(item_clean) > 2:
                     seen.add(item_clean.lower())
                     cleaned.append(item_clean)
-            results[key] = cleaned[:6]  # cap at 6 per category
+            results[key] = cleaned[:6]
 
     return results
 
@@ -117,15 +168,17 @@ def extract_judgment_outcome(text: str) -> str:
     """Try to detect outcome: allowed, dismissed, remanded, etc."""
     text_lower = text.lower()
     outcome_patterns = [
+        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b', "Appeal Dismissed ❌"),
         (r'\bappeal\s+is\s+allowed\b', "Appeal Allowed ✅"),
-        (r'\bappeal\s+is\s+dismissed\b', "Appeal Dismissed ❌"),
+        (r'\bappeals?\s+(?:are\s+)?allowed\b', "Appeal Allowed ✅"),
         (r'\bpetition\s+is\s+allowed\b', "Petition Allowed ✅"),
-        (r'\bpetition\s+is\s+dismissed\b', "Petition Dismissed ❌"),
+        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b', "Petition Dismissed ❌"),
         (r'\bmatter\s+is\s+remanded\b', "Remanded to Lower Court 🔄"),
         (r'\bremanded\s+back\b', "Remanded to Lower Court 🔄"),
         (r'\bconviction\s+is\s+set\s+aside\b', "Conviction Set Aside ✅"),
         (r'\bconviction\s+upheld\b', "Conviction Upheld ❌"),
         (r'\bpartly\s+allowed\b', "Partly Allowed ⚖️"),
+        (r'\bsuit\s+(?:is\s+)?dismissed\b', "Suit Dismissed ❌"),
         (r'\bsettled\b', "Settled 🤝"),
     ]
     for pattern, label in outcome_patterns:
