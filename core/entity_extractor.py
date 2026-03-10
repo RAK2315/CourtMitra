@@ -17,116 +17,138 @@ def get_nlp():
     return _nlp
 
 
-# Words that spaCy wrongly classifies as persons or orgs
-PERSON_NOISE = {
+# ── Noise word sets ───────────────────────────────────────────────────────────
+# Any spaCy PERSON entity whose text contains these words is discarded
+PERSON_NOISE_WORDS = {
     "order", "rule", "section", "article", "act", "court", "bench",
     "appellant", "respondent", "petitioner", "plaintiff", "defendant",
-    "judgment", "decree", "appeal", "petition", "hon", "honourable",
-    "j.", "j", "cpc", "ipc", "crpc", "sub-rule", "clause", "schedule",
-    "xli", "xlii", "xliii", "order xli", "per contra",
+    "judgment", "decree", "appeal", "petition", "honourable",
+    "cpc", "ipc", "crpc", "sub-rule", "clause", "schedule",
+    "survey", "no.", "hereinafter", "per contra", "supra",
+    "xli", "xlii", "xliii", "xliv", "viz", "vide",
 }
 
-ORG_NOISE = {
-    "rs.", "rs", "inr", "₹", "rule", "order", "section", "sub-rule",
-    "xli", "xlii", "review petition", "civil appeal", "writ petition",
-    "civil appellate jurisdiction", "appellate jurisdiction",
-    "civil apellate jurisdiction",  # typo in some PDFs
+# Any spaCy ORG entity whose text contains these words is discarded
+ORG_NOISE_WORDS = {
+    "rs.", "rs", "inr", "rule", "order", "section", "sub-rule",
+    "xli", "review petition", "civil appeal", "writ petition",
+    "appellate jurisdiction", "apellate jurisdiction",
+    "hereinafter", "civil suit no",
 }
 
-# Prefixes to strip when deduplicating acts/case numbers
+
 def _normalize(s: str) -> str:
-    """Lowercase, remove extra spaces and common prefixes for dedup."""
     s = s.lower().strip()
     s = re.sub(r'\s+', ' ', s)
     return s
 
-# Indian legal patterns
-PATTERNS = {
-    "case_numbers": [
-        # Standard: Civil Appeal Nos. 5168-5169 of 2011
-        r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
-        r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|'
-        r'Civil Suit|Criminal Case)\s*(?:Nos?\.?)?\s*[\d\-]+(?:\s*(?:of|OF)\s*\d{4})?\b',
-        # Short: 3075/2024 or 80/1996
-        r'\b\d{1,6}\s*/\s*\d{4}\b',
-        # INSC citations: 2026 INSC 211
-        r'\b\d{4}\s+INSC\s+\d+\b',
-    ],
-    "ipc_sections": [
-        r'\bSection\s+\d+[A-Z]?\s*(?:and\s+\d+[A-Z]?)?\s+(?:of\s+)?(?:IPC|I\.P\.C\.|Indian Penal Code)\b',
-        r'\bIPC\s+[Ss]ection\s+\d+[A-Z]?\b',
-        r'\bunder\s+[Ss]ections?\s+\d+[A-Z]?(?:\s*(?:and|,)\s*\d+[A-Z]?)*\s+(?:of\s+the\s+)?IPC\b',
-    ],
-    "acts_cited": [
-        r'(?:The\s+)?[A-Z][A-Za-z\s]+Act,?\s*\d{4}',
-        r'Code of Criminal Procedure|CrPC|Cr\.P\.C\.',
-        r'Code of Civil Procedure|CPC|C\.P\.C\.',
-        r'Constitution of India',
-        r'Indian Evidence Act',
-        r'Transfer of Property Act',
-        r'Hindu Marriage Act',
-        r'Order\s+XLI(?:\s+Rule\s+\d+)?',  # CPC Order citations
-    ],
-    "monetary_amounts": [
-        # Must have actual digits after Rs — Rs.2,000/- or Rs. 50,000 or Rs 1 lakh
-        r'Rs\.?\s*[\d,]+(?:\.\d{1,2})?(?:/-)?(?:\s*(?:lakhs?|crores?|thousands?))?',
-        r'₹\s*[\d,]+(?:\.\d{1,2})?',
-        r'INR\s+[\d,]+',
-    ],
-    "dates": [
-        r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
-        r'July|August|September|October|November|December),?\s+\d{4}\b',
-        r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
-    ],
-}
 
-
-def _is_noise(text: str, noise_set: set) -> bool:
-    """Check if extracted entity is junk."""
-    t = text.strip().lower()
-    if len(t) <= 2:
+def _is_person_noise(name: str) -> bool:
+    n = name.lower()
+    if len(n) <= 3:
         return True
-    if any(n in t for n in noise_set):
+    if any(c.isdigit() for c in name):
         return True
-    # Filter things starting with digits (Rs amounts misclassified as orgs)
-    if re.match(r'^\d', t):
+    if any(word in n for word in PERSON_NOISE_WORDS):
+        return True
+    # Discard single-word all-caps that aren't real names (e.g. "DATE", "VERSUS")
+    if name.isupper() and ' ' not in name and len(name) < 6:
         return True
     return False
 
 
+def _is_org_noise(org: str) -> bool:
+    o = org.lower()
+    if len(o) <= 4:
+        return True
+    if any(word in o for word in ORG_NOISE_WORDS):
+        return True
+    # Starts with digit
+    if re.match(r'^\d', o):
+        return True
+    # PDF header: all caps + very long
+    if org.isupper() and len(org) > 25:
+        return True
+    # Single word "Date" or "No" misclassified
+    if org.strip() in {"Date", "No", "No.", "J", "J."}:
+        return True
+    return False
+
+
+# ── Regex patterns ────────────────────────────────────────────────────────────
+CASE_NUMBER_PATTERNS = [
+    # Civil/Criminal Appeal Nos. 5168-5169 of 2011
+    r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
+    r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|Civil Suit|Criminal Case|'
+    r'CRL\.A\.|CRL\.P\.|W\.P\.\(C\))\s*(?:Nos?\.?)?\s*[\d][\d\-]*'
+    r'(?:\s*(?:of|OF)\s*\d{4})?\b',
+    # 3075/2024 style
+    r'\b\d{1,6}\s*/\s*\d{4}\b',
+    # 2026 INSC 211 style
+    r'\b\d{4}\s+INSC\s+\d+\b',
+]
+
+IPC_SECTION_PATTERNS = [
+    r'\bSections?\s+\d+[A-Z]?(?:\s*,\s*\d+[A-Z]?)*(?:\s+and\s+\d+[A-Z]?)?\s+'
+    r'(?:of\s+(?:the\s+)?)?(?:IPC|I\.P\.C\.|Indian Penal Code)\b',
+    r'\bIPC\s+[Ss]ections?\s+\d+[A-Z]?\b',
+    r'\bSections?\s+\d+[A-Z]?\s*(?:,\s*\d+[A-Z]?\s*)*(?:and\s+\d+[A-Z]?\s+)?'
+    r'of\s+(?:the\s+)?(?:IPC|Indian Penal Code)\b',
+    # Sections 341, 323, 498A and 34 of the IPC
+    r'\bSections?\s+\d+[A-Z]?(?:\s*[,&]\s*\d+[A-Z]?)+\s+(?:and\s+\d+[A-Z]\s+)?'
+    r'of\s+(?:the\s+)?IPC\b',
+]
+
+ACT_PATTERNS = [
+    r'(?:The\s+)?[A-Z][A-Za-z\s]{3,40}Act,?\s*\d{4}',
+    r'Code of Criminal Procedure|CrPC|Cr\.P\.C\.',
+    r'Code of Civil Procedure|CPC|C\.P\.C\.',
+    r'Constitution of India',
+    r'Indian Evidence Act',
+    r'Transfer of Property Act',
+    r'Hindu Marriage Act',
+]
+
+# Rs. must be followed by at least 3 digits (so Rs.2,000 matches, rs, and rs.3 don't)
+AMOUNT_PATTERNS = [
+    r'Rs\.?\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?(?:/-)?',   # Rs.2,000/- or Rs.1,00,000
+    r'Rs\.?\s*\d{4,}(?:\.\d{1,2})?(?:/-)?',                 # Rs.5000 or Rs.50000
+    r'Rs\.?\s*\d+(?:\.\d{2})?\s*(?:lakhs?|crores?)',        # Rs.5 lakhs
+    r'₹\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?',
+    r'₹\s*\d{4,}',
+    r'INR\s+\d{4,}',
+]
+
+DATE_PATTERNS = [
+    r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
+    r'July|August|September|October|November|December),?\s+\d{4}\b',
+    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
+]
+
+
 def extract_entities(text: str) -> Dict:
-    """Extract legal entities from judgment text."""
     nlp = get_nlp()
     doc = nlp(text[:100000])
 
-    # NER from spaCy — with noise filtering
-    persons = []
-    seen_persons = set()
+    # ── spaCy NER ─────────────────────────────────────────────────────────────
+    persons, seen_p = [], set()
     for ent in doc.ents:
         if ent.label_ == "PERSON":
             name = ent.text.strip()
-            name_lower = name.lower()
-            if (len(name) > 3
-                    and name_lower not in seen_persons
-                    and not _is_noise(name, PERSON_NOISE)
-                    and not any(c.isdigit() for c in name)):
-                seen_persons.add(name_lower)
+            if not _is_person_noise(name) and name.lower() not in seen_p:
+                seen_p.add(name.lower())
                 persons.append(name)
-                if len(persons) >= 8:
+                if len(persons) >= 7:
                     break
 
-    orgs = []
-    seen_orgs = set()
+    orgs, seen_o = [], set()
     for ent in doc.ents:
         if ent.label_ == "ORG":
             org = ent.text.strip()
-            org_lower = org.lower()
-            if (len(org) > 4
-                    and org_lower not in seen_orgs
-                    and not _is_noise(org, ORG_NOISE)):
-                seen_orgs.add(org_lower)
+            if not _is_org_noise(org) and org.lower() not in seen_o:
+                seen_o.add(org.lower())
                 orgs.append(org)
-                if len(orgs) >= 8:
+                if len(orgs) >= 7:
                     break
 
     results = {
@@ -139,77 +161,61 @@ def extract_entities(text: str) -> Dict:
         "key_dates": [],
     }
 
-    for pattern in PATTERNS["case_numbers"]:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        results["case_numbers"].extend(matches)
+    # ── Regex extraction ──────────────────────────────────────────────────────
+    for p in CASE_NUMBER_PATTERNS:
+        results["case_numbers"].extend(re.findall(p, text, re.IGNORECASE))
 
-    for pattern in PATTERNS["ipc_sections"]:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        results["ipc_sections"].extend(matches)
+    for p in IPC_SECTION_PATTERNS:
+        results["ipc_sections"].extend(re.findall(p, text, re.IGNORECASE))
 
-    for pattern in PATTERNS["acts_cited"]:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        results["acts_cited"].extend(matches)
+    for p in ACT_PATTERNS:
+        results["acts_cited"].extend(re.findall(p, text, re.IGNORECASE))
 
-    for pattern in PATTERNS["monetary_amounts"]:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        results["monetary_amounts"].extend(matches)
+    for p in AMOUNT_PATTERNS:
+        results["monetary_amounts"].extend(re.findall(p, text, re.IGNORECASE))
 
-    for pattern in PATTERNS["dates"]:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        results["key_dates"].extend(matches)
+    for p in DATE_PATTERNS:
+        results["key_dates"].extend(re.findall(p, text, re.IGNORECASE))
 
-    # Deduplicate and clean
+    # ── Deduplicate (prefix-aware) ────────────────────────────────────────────
     for key in results:
-        if isinstance(results[key], list):
-            seen = set()
-            cleaned = []
-            for item in results[key]:
-                item_clean = item.strip()
-                # Skip very short or empty
-                if not item_clean or len(item_clean) <= 2:
-                    continue
-                # Normalize for dedup (catches "Order XLI Rule 27" repeated)
-                norm = _normalize(item_clean)
-                # Skip if we've seen something that starts the same way (prefix dedup)
-                already = any(
-                    norm.startswith(s[:30]) or s.startswith(norm[:30])
-                    for s in seen
-                )
-                if not already:
-                    seen.add(norm)
-                    cleaned.append(item_clean)
-                if len(cleaned) >= 6:
-                    break
-            results[key] = cleaned
-
-    # Extra filter: remove orgs that look like document headers (all caps, very long)
-    results["organizations"] = [
-        o for o in results["organizations"]
-        if not (o.isupper() and len(o) > 30)
-    ]
+        if not isinstance(results[key], list):
+            continue
+        seen_norms, cleaned = set(), []
+        for item in results[key]:
+            item = item.strip()
+            if not item or len(item) <= 2:
+                continue
+            norm = _normalize(item)
+            # Skip if already have something with same 28-char prefix
+            if any(norm[:28] == s[:28] for s in seen_norms):
+                continue
+            seen_norms.add(norm)
+            cleaned.append(item)
+            if len(cleaned) >= 6:
+                break
+        results[key] = cleaned
 
     return results
 
 
 def extract_judgment_outcome(text: str) -> str:
-    """Try to detect outcome: allowed, dismissed, remanded, etc."""
     text_lower = text.lower()
-    outcome_patterns = [
-        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b', "Appeal Dismissed ❌"),
-        (r'\bappeal\s+is\s+allowed\b', "Appeal Allowed ✅"),
-        (r'\bappeals?\s+(?:are\s+)?allowed\b', "Appeal Allowed ✅"),
-        (r'\bpetition\s+is\s+allowed\b', "Petition Allowed ✅"),
-        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b', "Petition Dismissed ❌"),
-        (r'\bmatter\s+is\s+remanded\b', "Remanded to Lower Court 🔄"),
-        (r'\bremanded\s+back\b', "Remanded to Lower Court 🔄"),
-        (r'\bconviction\s+is\s+set\s+aside\b', "Conviction Set Aside ✅"),
-        (r'\bconviction\s+upheld\b', "Conviction Upheld ❌"),
-        (r'\bpartly\s+allowed\b', "Partly Allowed ⚖️"),
-        (r'\bsuit\s+(?:is\s+)?dismissed\b', "Suit Dismissed ❌"),
-        (r'\bsettled\b', "Settled 🤝"),
+    patterns = [
+        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b',     "Appeal Dismissed ❌"),
+        (r'\bappeal\s+is\s+(?:hereby\s+)?allowed\b',        "Appeal Allowed ✅"),
+        (r'\bappeals?\s+(?:are\s+|hereby\s+)?allowed\b',    "Appeal Allowed ✅"),
+        (r'\bpetition\s+is\s+(?:hereby\s+)?allowed\b',      "Petition Allowed ✅"),
+        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b',      "Petition Dismissed ❌"),
+        (r'\bsuit\s+(?:is\s+|stand[s]?\s+)?dismissed\b',    "Suit Dismissed ❌"),
+        (r'\bmatter\s+is\s+remanded\b',                      "Remanded to Lower Court 🔄"),
+        (r'\bremanded\s+back\b',                             "Remanded to Lower Court 🔄"),
+        (r'\bconviction\s+(?:is\s+)?set\s+aside\b',         "Conviction Set Aside ✅"),
+        (r'\bconviction\s+upheld\b',                         "Conviction Upheld ❌"),
+        (r'\bpartly\s+allowed\b',                            "Partly Allowed ⚖️"),
+        (r'\bsettled\b',                                     "Settled 🤝"),
     ]
-    for pattern, label in outcome_patterns:
+    for pattern, label in patterns:
         if re.search(pattern, text_lower):
             return label
     return "Outcome unclear — check judgment order"
