@@ -1,68 +1,88 @@
 import os
-from groq import Groq
+import time
+import json
+from groq import Groq, RateLimitError
 from typing import List, Dict
 
 MODEL = "llama-3.3-70b-versatile"
+# Fallback to smaller/faster model if rate limit persists
+FALLBACK_MODEL = "llama-3.1-8b-instant"
 
 
 def get_client():
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise ValueError("GROQ_API_KEY not set in environment variables.")
+        raise ValueError("GROQ_API_KEY not set. Add it to .env or Streamlit secrets.")
     return Groq(api_key=api_key)
 
 
+def _call_groq(client, messages: list, max_tokens: int, temperature: float = 0.3) -> str:
+    """
+    Call Groq with automatic retry + fallback model on rate limit.
+    Tries: main model → wait 10s → retry → fallback model → wait 20s → error.
+    """
+    attempts = [
+        (MODEL, 0),
+        (MODEL, 10),
+        (FALLBACK_MODEL, 5),
+        (FALLBACK_MODEL, 20),
+    ]
+    last_error = None
+    for model, wait in attempts:
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content.strip()
+        except RateLimitError as e:
+            last_error = e
+            continue
+        except Exception as e:
+            raise e  # non-rate-limit errors raise immediately
+
+    raise RuntimeError(
+        "Groq rate limit exceeded across all retries. "
+        "Please wait 60 seconds and try again, or upgrade your Groq plan at console.groq.com."
+    ) from last_error
+
+
 def summarize_judgment(chunks: List[Dict], entities: Dict, language: str = "English") -> Dict:
-    """
-    Generate a structured plain-language summary of the judgment.
-    Returns dict with summary, key_issues, next_steps, case_type.
-    """
     client = get_client()
 
+    # Use only top 5 chunks and cap each at 600 chars to reduce token usage
     context = "\n\n".join([
-        f"[{c['section']}]\n{c['content']}"
-        for c in chunks[:6]
+        f"[{c['section']}]\n{c['content'][:600]}"
+        for c in chunks[:5]
     ])
 
-    lang_instruction = ""
-    if language == "Hindi":
-        lang_instruction = "Respond entirely in simple Hindi (Devanagari script)."
+    lang_instruction = "Respond entirely in simple Hindi (Devanagari script)." if language == "Hindi" else ""
 
-    prompt = f"""You are CourtMitra — you explain Indian court judgments to ordinary Indian citizens who have no legal background.
-
-Your tone is: warm, clear, like a knowledgeable friend explaining over chai. NOT robotic. NOT formal legal language.
-Use real names of people if mentioned. Be specific about what actually happened.
+    prompt = f"""You are CourtMitra — explain this Indian court judgment to an ordinary citizen with no legal background.
+Tone: warm, clear, like a knowledgeable friend. NOT robotic. Use real names. Be specific.
 
 JUDGMENT EXCERPTS:
 {context}
 
-EXTRACTED ENTITIES:
-- Case Numbers: {', '.join(entities.get('case_numbers', [])) or 'Not found'}
-- Acts Cited: {', '.join(entities.get('acts_cited', [])) or 'Not found'}
-- IPC Sections: {', '.join(entities.get('ipc_sections', [])) or 'Not found'}
-- Amounts: {', '.join(entities.get('monetary_amounts', [])) or 'Not found'}
+ENTITIES: Cases: {', '.join(entities.get('case_numbers', [])) or 'N/A'} | Acts: {', '.join(entities.get('acts_cited', [])[:3]) or 'N/A'} | IPC: {', '.join(entities.get('ipc_sections', [])) or 'N/A'}
 
 {lang_instruction}
 
-Respond ONLY with a valid JSON object in this exact format (no markdown, no extra text):
+Respond ONLY with valid JSON (no markdown):
 {{
-  "case_type": "one of: Criminal / Civil / Constitutional / Family / Labour / Consumer / Property",
-  "plain_summary": "3-4 sentences in simple conversational language. Use names. Say WHO did WHAT, what the lower court decided, why the Supreme Court disagreed, and what the final result is. A Class 10 student should understand this completely.",
-  "key_issues": ["specific issue 1 in plain words", "specific issue 2", "specific issue 3"],
-  "what_court_decided": "1 punchy sentence — exactly what was ordered, using plain words not legal jargon",
-  "next_steps": ["concrete step 1 for the person affected", "concrete step 2", "concrete step 3"],
-  "important_warning": "one friendly line reminding them to consult a lawyer for their specific situation"
+  "case_type": "Criminal / Civil / Constitutional / Family / Labour / Consumer / Property",
+  "plain_summary": "3-4 sentences, conversational, use names, say who won and why. Class 10 student should understand.",
+  "key_issues": ["issue 1 in plain words", "issue 2", "issue 3"],
+  "what_court_decided": "1 sentence — exactly what was ordered, plain words",
+  "next_steps": ["step 1 for the person affected", "step 2", "step 3"],
+  "important_warning": "one friendly reminder to consult a lawyer"
 }}"""
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1000,
-        temperature=0.3,
-    )
-
-    import json
-    raw = response.choices[0].message.content.strip()
+    raw = _call_groq(client, [{"role": "user", "content": prompt}], max_tokens=900)
     raw = raw.replace("```json", "").replace("```", "").strip()
 
     try:
@@ -79,40 +99,27 @@ Respond ONLY with a valid JSON object in this exact format (no markdown, no extr
 
 
 def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
-    """
-    Extract the logical reasoning chain from the judgment.
-    Returns a list of reasoning steps for flowchart rendering.
-    """
     client = get_client()
 
-    context = "\n\n".join([c["content"] for c in chunks[:5]])
+    # Cap chunks at 4, each at 500 chars
+    context = "\n\n".join([c["content"][:500] for c in chunks[:4]])
 
-    prompt = f"""You are analyzing an Indian court judgment to extract the judge's step-by-step reasoning chain.
+    prompt = f"""Analyze this Indian court judgment and extract the judge's step-by-step reasoning chain.
 
 JUDGMENT TEXT:
 {context}
 
-Respond ONLY with a valid JSON array (no markdown, no extra text) of 4-7 reasoning steps:
+Respond ONLY with a valid JSON array (no markdown) of 4-6 steps:
 [
-  {{"step": 1, "label": "short step title", "detail": "one sentence explanation", "type": "fact"}},
-  {{"step": 2, "label": "short step title", "detail": "one sentence explanation", "type": "issue"}},
-  {{"step": 3, "label": "short step title", "detail": "one sentence explanation", "type": "argument"}},
-  {{"step": 4, "label": "short step title", "detail": "one sentence explanation", "type": "law"}},
-  {{"step": 5, "label": "short step title", "detail": "one sentence explanation", "type": "decision"}}
+  {{"step": 1, "label": "3-5 word title", "detail": "one plain English sentence", "type": "fact"}},
+  {{"step": 2, "label": "3-5 word title", "detail": "one plain English sentence", "type": "issue"}},
+  {{"step": 3, "label": "3-5 word title", "detail": "one plain English sentence", "type": "argument"}},
+  {{"step": 4, "label": "3-5 word title", "detail": "one plain English sentence", "type": "law"}},
+  {{"step": 5, "label": "3-5 word title", "detail": "one plain English sentence", "type": "decision"}}
 ]
+Types: fact, issue, argument, law, decision only."""
 
-Types must be one of: fact, issue, argument, law, decision
-Make labels SHORT (3-5 words max). Details must be simple plain English."""
-
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=800,
-        temperature=0.2,
-    )
-
-    import json
-    raw = response.choices[0].message.content.strip()
+    raw = _call_groq(client, [{"role": "user", "content": prompt}], max_tokens=700, temperature=0.2)
     raw = raw.replace("```json", "").replace("```", "").strip()
 
     try:
@@ -127,14 +134,13 @@ Make labels SHORT (3-5 words max). Details must be simple plain English."""
 
 
 def answer_question(question: str, chunks: List[Dict], language: str = "English") -> str:
-    """Answer a specific question about the judgment using retrieved chunks."""
     client = get_client()
 
-    context = "\n\n".join([c["content"] for c in chunks[:4]])
-
+    # Cap at 3 chunks, 400 chars each
+    context = "\n\n".join([c["content"][:400] for c in chunks[:3]])
     lang_instruction = "Respond in simple Hindi." if language == "Hindi" else "Respond in simple English."
 
-    prompt = f"""You are CourtMitra. Answer the following question about this court judgment using ONLY information from the provided text. If the answer is not in the text, say so clearly.
+    prompt = f"""You are CourtMitra. Answer the question using ONLY information from the text below. If the answer isn't there, say so.
 
 JUDGMENT EXCERPTS:
 {context}
@@ -142,12 +148,6 @@ JUDGMENT EXCERPTS:
 QUESTION: {question}
 
 {lang_instruction}
-Keep your answer concise (2-4 sentences). Do not add legal advice."""
+Keep answer to 2-4 sentences. No legal advice."""
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=400,
-        temperature=0.3,
-    )
-    return response.choices[0].message.content.strip()
+    return _call_groq(client, [{"role": "user", "content": prompt}], max_tokens=350)

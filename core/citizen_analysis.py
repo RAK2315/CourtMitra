@@ -137,54 +137,54 @@ def calculate_appeal_deadline(case_type: str, judgment_date_str: str) -> Dict:
 
 
 def detect_red_flags(text: str, chunks: List[Dict]) -> Dict:
-    """
-    Use LLM + pattern matching to detect procedural red flags in the judgment.
-    Returns a score and list of flags.
-    """
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    context = "\n\n".join([c["content"] for c in chunks[:5]])
+    """Detect procedural red flags in the judgment."""
+    from groq import RateLimitError
+    import time
 
-    prompt = f"""You are a legal analyst reviewing an Indian court judgment for procedural concerns and red flags.
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    context = "\n\n".join([c["content"][:400] for c in chunks[:4]])
+
+    prompt = f"""You are a legal analyst reviewing an Indian court judgment for procedural concerns.
 
 JUDGMENT TEXT:
 {context}
 
-Analyze for the following types of issues:
-1. Ex-parte orders (decided without hearing one party)
-2. Unexplained long delays between filing and judgment
-3. Inconsistent application of law to similar parties
-4. Vague or omnibus allegations accepted without scrutiny
-5. Contradictory findings within the same judgment
-6. Procedural violations (notice not served, hearing not given)
-7. Judgment based on insufficient evidence
+Analyze for: ex-parte orders, unexplained delays, inconsistent application of law, vague allegations accepted without scrutiny, contradictory findings, procedural violations, insufficient evidence.
 
 Respond ONLY with valid JSON (no markdown):
 {{
   "danger_score": <integer 0-100, where 0=perfectly fair, 100=severely concerning>,
   "flags": [
-    {{"issue": "short issue title", "detail": "one sentence explanation", "severity": "high|medium|low"}}
+    {{"issue": "short title", "detail": "one sentence explanation", "severity": "high|medium|low"}}
   ],
-  "overall_assessment": "one sentence plain English assessment of the judgment's fairness",
-  "positive_observations": ["one thing the court did right", "another positive observation"]
+  "overall_assessment": "one plain English sentence about fairness",
+  "positive_observations": ["one thing court did right", "another positive"]
 }}
 
-Be objective. If no red flags exist, return an empty flags array and low danger_score."""
+Be objective. Empty flags array if no issues found."""
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
-            temperature=0.2,
-        )
-        raw = response.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        import json
-        return json.loads(raw)
-    except Exception:
-        return {
-            "danger_score": 0,
-            "flags": [],
-            "overall_assessment": "Analysis unavailable.",
-            "positive_observations": [],
-        }
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    for i, model in enumerate(models):
+        if i > 0:
+            time.sleep(8)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.2,
+            )
+            raw = response.choices[0].message.content.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            return json.loads(raw)
+        except RateLimitError:
+            continue
+        except Exception:
+            break
+
+    return {
+        "danger_score": 0,
+        "flags": [],
+        "overall_assessment": "Analysis unavailable — rate limit reached. Try again in a moment.",
+        "positive_observations": [],
+    }
