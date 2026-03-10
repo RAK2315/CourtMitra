@@ -29,7 +29,16 @@ PERSON_NOISE = {
 ORG_NOISE = {
     "rs.", "rs", "inr", "₹", "rule", "order", "section", "sub-rule",
     "xli", "xlii", "review petition", "civil appeal", "writ petition",
+    "civil appellate jurisdiction", "appellate jurisdiction",
+    "civil apellate jurisdiction",  # typo in some PDFs
 }
+
+# Prefixes to strip when deduplicating acts/case numbers
+def _normalize(s: str) -> str:
+    """Lowercase, remove extra spaces and common prefixes for dedup."""
+    s = s.lower().strip()
+    s = re.sub(r'\s+', ' ', s)
+    return s
 
 # Indian legal patterns
 PATTERNS = {
@@ -59,9 +68,10 @@ PATTERNS = {
         r'Order\s+XLI(?:\s+Rule\s+\d+)?',  # CPC Order citations
     ],
     "monetary_amounts": [
-        r'Rs\.?\s*[\d,]+(?:\.\d{2})?(?:/-)?\s*(?:\(?rupees?\)?)?(?:\s*(?:lakhs?|crores?|thousands?))?',
-        r'₹\s*[\d,]+(?:\.\d{2})?',
-        r'INR\s*[\d,]+',
+        # Must have actual digits after Rs — Rs.2,000/- or Rs. 50,000 or Rs 1 lakh
+        r'Rs\.?\s*[\d,]+(?:\.\d{1,2})?(?:/-)?(?:\s*(?:lakhs?|crores?|thousands?))?',
+        r'₹\s*[\d,]+(?:\.\d{1,2})?',
+        r'INR\s+[\d,]+',
     ],
     "dates": [
         r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
@@ -156,10 +166,28 @@ def extract_entities(text: str) -> Dict:
             cleaned = []
             for item in results[key]:
                 item_clean = item.strip()
-                if item_clean and item_clean.lower() not in seen and len(item_clean) > 2:
-                    seen.add(item_clean.lower())
+                # Skip very short or empty
+                if not item_clean or len(item_clean) <= 2:
+                    continue
+                # Normalize for dedup (catches "Order XLI Rule 27" repeated)
+                norm = _normalize(item_clean)
+                # Skip if we've seen something that starts the same way (prefix dedup)
+                already = any(
+                    norm.startswith(s[:30]) or s.startswith(norm[:30])
+                    for s in seen
+                )
+                if not already:
+                    seen.add(norm)
                     cleaned.append(item_clean)
-            results[key] = cleaned[:6]
+                if len(cleaned) >= 6:
+                    break
+            results[key] = cleaned
+
+    # Extra filter: remove orgs that look like document headers (all caps, very long)
+    results["organizations"] = [
+        o for o in results["organizations"]
+        if not (o.isupper() and len(o) > 30)
+    ]
 
     return results
 
