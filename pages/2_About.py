@@ -211,6 +211,84 @@ for i, (tool, purpose, cost, color) in enumerate(stack):
 
 st.markdown("---")
 
+# ── What the tech stack actually means ───────────────────────────────────────
+st.markdown('<div class="section-header">What That Tech Stack Actually Means</div>', unsafe_allow_html=True)
+st.markdown("<small style='color:#555'>Plain English explanation — no jargon.</small>", unsafe_allow_html=True)
+st.markdown("")
+
+explanations = [
+    ("🤖", "Groq (llama-3.3-70b)", "Free & fast AI",
+     "This is the AI brain. Think of it like a very well-read assistant who has studied millions of legal documents. We give it only the relevant parts of your judgment — not the whole thing — and ask it to explain in simple words. It runs on Groq's servers for free."),
+    ("🧮", "sentence-transformers", "Meaning-based search",
+     "When you search 'dowry harassment case', normal search looks for those exact words. sentence-transformers understands *meaning* — so it finds chunks about 'cruelty demand for BMW' even if the words don't match. It converts text into numbers that capture meaning, called embeddings. Runs entirely on your computer, no internet needed."),
+    ("🗄️", "ChromaDB", "The memory bank",
+     "Every judgment you upload gets stored here as a searchable library. When you upload a new case, ChromaDB instantly finds which old cases are similar — like a librarian who has read every book and remembers all of them. Stored locally on your machine, nothing goes to the cloud."),
+    ("🔍", "spaCy", "The legal entity spotter",
+     "A specialist tool trained to read text and spot important things — names, dates, organizations, legal references. We added our own Indian legal patterns on top (IPC sections, acts, case numbers). This part never touches any AI — it's pure rule-based extraction, so it never makes things up."),
+    ("📄", "PyMuPDF", "The PDF reader",
+     "Court PDFs are messy — scanned text, weird fonts, footnotes everywhere. PyMuPDF is a battle-tested library that extracts clean text from even messy court PDFs. It handles all the grunt work before anything else sees the document."),
+    ("🌐", "deep-translator", "Hindi bridge",
+     "Sends the final plain-language output to Google Translate's free API and gets Hindi back. Simple but powerful — means someone who can't read English can still understand their own court case."),
+    ("🖥️", "Streamlit", "The interface",
+     "Streamlit lets us build a proper web app entirely in Python — no separate frontend code needed. What you're looking at right now is built with it. We added custom CSS on top to make it look nothing like the default grey Streamlit apps."),
+]
+
+for icon, tool, subtitle, explanation in explanations:
+    st.markdown(f"""
+    <div style="background:#0d1a2e;border:1px solid #1e3a5f;border-radius:10px;
+        padding:20px 24px;margin:10px 0;display:flex;gap:16px;align-items:flex-start;">
+        <div style="font-size:2rem;flex-shrink:0;">{icon}</div>
+        <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+                <span style="font-family:'JetBrains Mono',monospace;color:#c9a84c;
+                    font-size:0.8rem;font-weight:700;">{tool}</span>
+                <span style="background:#1e3a5f;color:#4a9eff;font-size:10px;
+                    padding:2px 8px;border-radius:10px;">{subtitle}</span>
+            </div>
+            <div style="color:#9ab4cc;font-size:13px;line-height:1.7;">{explanation}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ── Features breakdown ────────────────────────────────────────────────────────
+st.markdown('<div class="section-header">Every Feature, Explained</div>', unsafe_allow_html=True)
+st.markdown("")
+
+features = [
+    ("📋", "Plain Language Summary", "#4a9eff",
+     "The LLM reads the most relevant chunks of the judgment and rewrites them in conversational language — using real names, simple sentences, and no legal jargon. It explicitly tells you who won, why, and what actually happened. Tone is set to 'explain like a knowledgeable friend over chai'."),
+    ("🗂️", "Legal Entity Extraction", "#f59e0b",
+     "Pure spaCy + hand-written regex patterns — zero AI involved. Scans the full text for IPC sections (like 498A, 341), acts cited (Dowry Prohibition Act, Hindu Marriage Act), case numbers, monetary amounts, dates, and persons. Because there's no LLM here, it cannot hallucinate. What you see was literally found in the text."),
+    ("🔗", "Reasoning Chain Flowchart", "#a855f7",
+     "The LLM reads the judgment and extracts the logical steps the judge took — from facts presented, to issues identified, to law applied, to final decision. Our code then renders this as a color-coded visual flowchart. This is the hardest feature to replicate with just a ChatGPT prompt — it requires our graph construction code."),
+    ("🔍", "Similar Cases", "#22c55e",
+     "When you upload multiple judgments, each one gets embedded and stored in ChromaDB. When you view any case, semantic search finds which other cases in your library are structurally similar — same type of dispute, same legal issues. The more cases you index, the more useful this becomes."),
+    ("💬", "Ask a Question", "#4a9eff",
+     "You ask a question in plain English. The system finds the most relevant chunks from the judgment using semantic search, then passes only those chunks to the LLM along with your question. The LLM is explicitly told: answer only from what's in these chunks. This is what makes it grounded — it physically cannot answer from memory or make things up."),
+    ("🛡️", "Your Rights & Next Steps", "#ef4444",
+     "Three things in one tab: (1) Appeal Deadline — calculates exactly how many days the losing party has left to file an appeal, with the correct court and legal section. (2) Rights Involved — scans for fundamental rights like Article 21 (Right to Life) and explains in plain language what each right means. (3) Fairness Score — AI analyzes the judgment for procedural red flags like ex-parte orders, vague allegations, or inconsistent reasoning, and gives a 0–100 fairness score with specific issues flagged."),
+]
+
+for icon, title, color, desc in features:
+    st.markdown(f"""
+    <div style="background:#0d1a2e;border:1px solid #1e3a5f;
+        border-left:4px solid {color};border-radius:0 10px 10px 0;
+        padding:20px 24px;margin:10px 0;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <span style="font-size:1.5rem;">{icon}</span>
+            <span style="font-family:'Playfair Display',serif;color:{color};
+                font-size:1.05rem;font-weight:700;">{title}</span>
+        </div>
+        <div style="color:#9ab4cc;font-size:13px;line-height:1.8;padding-left:36px;">
+            {desc}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
+
 # ── SDGs ──────────────────────────────────────────────────────────────────────
 st.markdown('<div class="section-header">UN Sustainable Development Goals</div>', unsafe_allow_html=True)
 st.markdown("")

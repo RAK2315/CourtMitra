@@ -27,12 +27,13 @@ Upload any Supreme Court or High Court judgment PDF and get:
 
 | Feature | What you see |
 |---|---|
-| **Plain Summary** | 3–4 sentences anyone can understand, using real names |
-| **Legal Entities** | Acts cited, IPC sections, case numbers, amounts, dates — extracted without AI |
-| **Reasoning Chain** | Visual flowchart of how the judge arrived at the decision |
-| **Similar Cases** | Other judgments in your database that are structurally similar |
-| **Q&A** | Ask any question — answers come only from the document, no hallucination |
-| **Hindi Output** | Toggle the entire output to Hindi |
+| **📋 Plain Summary** | 3–4 sentences anyone can understand, using real names |
+| **🗂️ Legal Entities** | Acts cited, IPC sections, case numbers, amounts, dates — extracted without AI |
+| **🔗 Reasoning Chain** | Visual flowchart of how the judge arrived at the decision |
+| **🔍 Similar Cases** | Other judgments in your database that are structurally similar |
+| **💬 Q&A** | Ask any question — answers come only from the document, no hallucination |
+| **🛡️ Your Rights** | Appeal deadline countdown, fundamental rights involved, AI fairness score (0–100) |
+| **🌐 Hindi Output** | Toggle the entire output to Hindi |
 
 ---
 
@@ -152,6 +153,19 @@ Works best with:
 Download free PDFs from:
 - [scholar.google.com](https://scholar.google.com) → Case law tab
 - [sci.gov.in/judgments](https://sci.gov.in/judgments)
+
+---
+
+## What Makes It Different
+
+Most "legal AI" at hackathons is just `ChatGPT.summarize(pdf)`. CourtMitra has 6 tabs of genuinely distinct functionality:
+
+- **No hallucination on facts** — entities extracted by regex, Q&A grounded by RAG
+- **Visual reasoning flowchart** — requires our graph construction code, not just a prompt
+- **Appeal deadline calculator** — real legal deadlines with the correct court and section of law
+- **Fundamental rights explainer** — Articles 14, 19, 21, 22, 32 detected and explained in plain language
+- **Fairness score (0–100)** — procedural red flag detection with HIGH/MEDIUM/LOW severity
+- **Cross-case similarity** — semantic search across your entire indexed case library
 
 ---
 
