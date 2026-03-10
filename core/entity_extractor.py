@@ -26,6 +26,7 @@ PERSON_NOISE_WORDS = {
     "cpc", "ipc", "crpc", "sub-rule", "clause", "schedule",
     "survey", "no.", "hereinafter", "per contra", "supra",
     "xli", "xlii", "xliii", "xliv", "viz", "vide",
+    "misc", "code", "facts", "annexure", "exhibit",
 }
 
 # Any spaCy ORG entity whose text contains these words is discarded
@@ -63,28 +64,28 @@ def _is_org_noise(org: str) -> bool:
         return True
     if any(word in o for word in ORG_NOISE_WORDS):
         return True
-    # Starts with digit
     if re.match(r'^\d', o):
         return True
-    # PDF header: all caps + very long
     if org.isupper() and len(org) > 25:
         return True
-    # Single word "Date" or "No" misclassified
-    if org.strip() in {"Date", "No", "No.", "J", "J."}:
+    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS"}:
+        return True
+    # Truncated words ending with (S — APPELLANT(S, RESPONDENT(S
+    if re.search(r'\([A-Z]$', org):
+        return True
+    # "Original Suit No" type patterns
+    if re.match(r'(?:original\s+suit|civil\s+suit|criminal\s+case)\s+no', o):
         return True
     return False
 
 
 # ── Regex patterns ────────────────────────────────────────────────────────────
 CASE_NUMBER_PATTERNS = [
-    # Civil/Criminal Appeal Nos. 5168-5169 of 2011
     r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
     r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|Civil Suit|Criminal Case|'
     r'CRL\.A\.|CRL\.P\.|W\.P\.\(C\))\s*(?:Nos?\.?)?\s*[\d][\d\-]*'
     r'(?:\s*(?:of|OF)\s*\d{4})?\b',
-    # 3075/2024 style
     r'\b\d{1,6}\s*/\s*\d{4}\b',
-    # 2026 INSC 211 style
     r'\b\d{4}\s+INSC\s+\d+\b',
 ]
 
@@ -94,19 +95,21 @@ IPC_SECTION_PATTERNS = [
     r'\bIPC\s+[Ss]ections?\s+\d+[A-Z]?\b',
     r'\bSections?\s+\d+[A-Z]?\s*(?:,\s*\d+[A-Z]?\s*)*(?:and\s+\d+[A-Z]?\s+)?'
     r'of\s+(?:the\s+)?(?:IPC|Indian Penal Code)\b',
-    # Sections 341, 323, 498A and 34 of the IPC
     r'\bSections?\s+\d+[A-Z]?(?:\s*[,&]\s*\d+[A-Z]?)+\s+(?:and\s+\d+[A-Z]\s+)?'
     r'of\s+(?:the\s+)?IPC\b',
+    # section 464 of the I.P.C.
+    r'\bsection\s+\d+[A-Z]?\s+of\s+(?:the\s+)?I\.P\.C\.\b',
 ]
 
 ACT_PATTERNS = [
-    r'(?:The\s+)?[A-Z][A-Za-z\s]{3,40}Act,?\s*\d{4}',
-    r'Code of Criminal Procedure|CrPC|Cr\.P\.C\.',
-    r'Code of Civil Procedure|CPC|C\.P\.C\.',
-    r'Constitution of India',
-    r'Indian Evidence Act',
-    r'Transfer of Property Act',
-    r'Hindu Marriage Act',
+    # Require word boundary at start so mid-word matches like "ay between...Act" are blocked
+    r'\b(?:The\s+)?[A-Z][A-Za-z\s]{3,45}Act,?\s*\d{4}\b',
+    r'\bCode of Criminal Procedure\b|\bCrPC\b|\bCr\.P\.C\.\b',
+    r'\bCode of Civil Procedure\b|\bCPC\b|\bC\.P\.C\.\b',
+    r'\bConstitution of India\b',
+    r'\bIndian Evidence Act\b',
+    r'\bTransfer of Property Act\b',
+    r'\bHindu Marriage Act\b',
 ]
 
 # Rs. must be followed by at least 3 digits (so Rs.2,000 matches, rs, and rs.3 don't)
@@ -120,9 +123,16 @@ AMOUNT_PATTERNS = [
 ]
 
 DATE_PATTERNS = [
+    # 12th August, 2009 or 12th August 2009
     r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
     r'July|August|September|October|November|December),?\s+\d{4}\b',
+    # 12/03/2009 or 12-03-2009
     r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
+    # August 12, 2009 (American format sometimes in older judgments)
+    r'\b(?:January|February|March|April|May|June|July|August|September|'
+    r'October|November|December)\s+\d{1,2},?\s+\d{4}\b',
+    # 2009-03-12 (ISO)
+    r'\b\d{4}-\d{2}-\d{2}\b',
 ]
 
 
