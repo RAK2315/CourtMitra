@@ -27,6 +27,8 @@ PERSON_NOISE_WORDS = {
     "survey", "no.", "hereinafter", "per contra", "supra",
     "xli", "xlii", "xliii", "xliv", "viz", "vide",
     "misc", "code", "facts", "annexure", "exhibit",
+    "municipal", "nagar", "colony", "street", "road", "village",
+    "azad", "bazar", "chowk", "ward", "taluka", "tehsil", "district",
 }
 
 # Any spaCy ORG entity whose text contains these words is discarded
@@ -35,6 +37,8 @@ ORG_NOISE_WORDS = {
     "xli", "review petition", "civil appeal", "writ petition",
     "appellate jurisdiction", "apellate jurisdiction",
     "hereinafter", "civil suit no",
+    "rupees", "lacs", "lakhs", "crores",
+    "municipal no", "plot no", "survey no", "flat no", "ward no",
 }
 
 
@@ -68,13 +72,19 @@ def _is_org_noise(org: str) -> bool:
         return True
     if org.isupper() and len(org) > 25:
         return True
-    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS"}:
+    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor"}:
         return True
     # Truncated words ending with (S — APPELLANT(S, RESPONDENT(S
     if re.search(r'\([A-Z]$', org):
         return True
     # "Original Suit No" type patterns
     if re.match(r'(?:original\s+suit|civil\s+suit|criminal\s+case)\s+no', o):
+        return True
+    # All-caps two-word entity with no digits = likely a person name (e.g. DEEPAK SINGH)
+    words = org.strip().split()
+    if (org.isupper() and len(words) == 2
+            and all(w.isalpha() for w in words)
+            and not any(w.lower() in {"ltd", "pvt", "inc", "corp", "co"} for w in words)):
         return True
     return False
 
@@ -102,8 +112,8 @@ IPC_SECTION_PATTERNS = [
 ]
 
 ACT_PATTERNS = [
-    # Require word boundary at start so mid-word matches like "ay between...Act" are blocked
-    r'\b(?:The\s+)?[A-Z][A-Za-z\s]{3,45}Act,?\s*\d{4}\b',
+    # Must start with The or a Capital word — never "of the X Act"
+    r'\b(?:The\s+)?[A-Z][A-Za-z]{2,}(?:\s+[A-Za-z]{2,}){0,6}\s+Act,?\s*\d{4}\b',
     r'\bCode of Criminal Procedure\b|\bCrPC\b|\bCr\.P\.C\.\b',
     r'\bCode of Civil Procedure\b|\bCPC\b|\bC\.P\.C\.\b',
     r'\bConstitution of India\b',
@@ -179,7 +189,9 @@ def extract_entities(text: str) -> Dict:
         results["ipc_sections"].extend(re.findall(p, text, re.IGNORECASE))
 
     for p in ACT_PATTERNS:
-        results["acts_cited"].extend(re.findall(p, text, re.IGNORECASE))
+        # Do NOT use IGNORECASE here — act names must start with capital letter
+        # This prevents "of the Information Technology Act" from matching
+        results["acts_cited"].extend(re.findall(p, text))
 
     for p in AMOUNT_PATTERNS:
         results["monetary_amounts"].extend(re.findall(p, text, re.IGNORECASE))
