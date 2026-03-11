@@ -194,9 +194,9 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📋 Summary", "🗂️ Entities", "🔗 Reasoning Chain",
-        "🔍 Similar Cases", "💬 Ask a Question", "🛡️ Your Rights"
+        "🔍 Similar Cases", "💬 Ask a Question", "🛡️ Your Rights", "📖 Glossary"
     ])
 
     # ── TAB 1: Summary ────────────────────────────────────────────────────────
@@ -277,13 +277,14 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
         st.markdown("")
 
         entity_config = [
-            ("case_numbers",      "📁 Case Numbers",      "#4a9eff"),
-            ("acts_cited",        "📜 Acts Cited",        "#f59e0b"),
-            ("ipc_sections",      "⚖️ IPC / Sections",    "#a855f7"),
-            ("monetary_amounts",  "💰 Amounts",           "#22c55e"),
-            ("key_dates",         "📅 Key Dates",         "#ef4444"),
-            ("persons_mentioned", "👤 Persons",           "#9ab4cc"),
-            ("organizations",     "🏛️ Organizations",     "#c9a84c"),
+            ("case_numbers",      "📁 Case Numbers",        "#4a9eff"),
+            ("statutes",          "⚖️ Statutes & Articles",  "#a855f7"),
+            ("acts_cited",        "📜 Acts Cited",           "#f59e0b"),
+            ("cited_cases",       "🏛️ Cases Cited",          "#9ab4cc"),
+            ("monetary_amounts",  "💰 Amounts",              "#22c55e"),
+            ("key_dates",         "📅 Key Dates",            "#ef4444"),
+            ("persons_mentioned", "👤 Persons",              "#c9a84c"),
+            ("organizations",     "🏢 Organizations",        "#64748b"),
         ]
 
         cols = st.columns(2)
@@ -397,8 +398,8 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
 
         if st.button("🔍 Get Answer") and question:
             with st.spinner("Retrieving relevant sections and generating answer..."):
-                q_chunks = retrieve_similar(question, top_k=4, doc_name=doc_name)
-                answer = answer_question(question, q_chunks, language)
+                q_chunks = retrieve_similar(question, top_k=6, doc_name=doc_name)
+                answer = answer_question(question, q_chunks, full_text=text, language=language)
 
             st.markdown(f"""
             <div class="summary-card" style="margin-top:16px;">
@@ -531,11 +532,25 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
 
         # ── Red Flag Detector ────────────────────────────────────────────────
         st.markdown('<div class="section-header" style="font-size:1rem;">🚨 Fairness Assessment</div>', unsafe_allow_html=True)
+        st.markdown("<small style='color:#555'>AI analysis of procedural fairness — click to run (uses API quota)</small>", unsafe_allow_html=True)
+        st.markdown("")
 
-        with st.spinner("Analyzing judgment for procedural concerns..."):
-            red_flags = detect_red_flags(text, top_chunks)
+        if st.button("🔍 Run Fairness Assessment", key="fairness_btn"):
+            with st.spinner("Analyzing judgment for procedural concerns..."):
+                red_flags = detect_red_flags(text, top_chunks)
+            st.session_state["red_flags"] = red_flags
 
-        danger_score = red_flags.get("danger_score", 0)
+        red_flags = st.session_state.get("red_flags", None)
+
+        if red_flags is None:
+            st.markdown("""
+            <div style="background:#0d1a2e;border:1px solid #1e3a5f;border-radius:8px;
+                padding:20px;text-align:center;color:#555;">
+                Click the button above to analyze this judgment for fairness concerns.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            danger_score = red_flags.get("danger_score", 0)
 
         # Score color
         if danger_score >= 60:
@@ -630,6 +645,81 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
             It does not constitute a legal opinion. Consult a qualified lawyer before taking any action.
         </div>
         """, unsafe_allow_html=True)
+
+    # ── TAB 7: Glossary ───────────────────────────────────────────────────────
+    with tab7:
+        st.markdown('<div class="section-header">📖 Legal Terms Explained</div>', unsafe_allow_html=True)
+        st.markdown("<small style='color:#555'>Hard legal terms found in this judgment — explained in plain English</small>", unsafe_allow_html=True)
+        st.markdown("")
+
+        if st.button("🔍 Extract & Explain Legal Terms", key="glossary_btn"):
+            with st.spinner("Identifying difficult legal terms..."):
+                from core.llm_handler import extract_legal_terms
+                glossary = extract_legal_terms(text)
+            st.session_state["glossary"] = glossary
+
+        glossary = st.session_state.get("glossary", None)
+
+        if glossary is None:
+            st.markdown("""
+            <div style="background:#0d1a2e;border:1px solid #1e3a5f;border-radius:8px;
+                padding:30px;text-align:center;color:#555;">
+                <div style="font-size:32px;margin-bottom:12px;">📚</div>
+                Click the button above to extract and explain difficult legal terms from this judgment.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            terms = glossary.get("terms", [])
+            if not terms:
+                st.markdown("<div style='color:#555;padding:20px'>No particularly difficult terms detected in this judgment.</div>", unsafe_allow_html=True)
+            else:
+                # Also show always-useful glossary of common Indian legal terms
+                for term_obj in terms:
+                    term = term_obj.get("term", "")
+                    explanation = term_obj.get("explanation", "")
+                    if term and explanation:
+                        st.markdown(f"""
+                        <div style="background:#0d1a2e;border:1px solid #1e3a5f;border-radius:8px;
+                            padding:16px 20px;margin:8px 0;">
+                            <div style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;
+                                color:#c9a84c;font-weight:700;margin-bottom:6px;">{term}</div>
+                            <div style="color:#d4c5a9;font-size:0.9rem;line-height:1.6;">{explanation}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+        # Always show common Indian legal terms reference
+        st.markdown("---")
+        st.markdown('<div class="section-header" style="font-size:1rem;">📌 Common Indian Legal Terms</div>', unsafe_allow_html=True)
+
+        common_terms = [
+            ("Writ Petition", "A petition filed directly in High Court (Art. 226) or Supreme Court (Art. 32) asking the court to protect a fundamental right."),
+            ("SLP (Special Leave Petition)", "A petition under Article 136 asking the Supreme Court to hear an appeal from any court in India — the court's discretion to admit it."),
+            ("Ex Parte", "A decision made after hearing only one side — because the other party did not appear or was not notified."),
+            ("Res Judicata", "A case that has already been decided by a court cannot be reopened. 'The matter has been adjudicated.'"),
+            ("Locus Standi", "The legal right to bring a case to court. You must have a direct interest in the matter."),
+            ("Mandamus", "A High Court or Supreme Court order directing a government body to perform its legal duty."),
+            ("Certiorari", "A writ quashing (cancelling) an illegal order passed by a lower court or government body."),
+            ("Prima Facie", "On the face of it — the case appears strong enough to proceed, based on initial evidence."),
+            ("Inter Alia", "Among other things — used when listing some but not all relevant points."),
+            ("Affidavit", "A written statement made under oath — treated as evidence in court."),
+            ("Remand", "Sending a case back to a lower court for reconsideration or fresh trial."),
+            ("Suo Motu", "The court takes action on its own, without anyone filing a petition — typically in public interest matters."),
+            ("Caveat", "A formal notice filed in court asking to be heard before any order is passed against you."),
+            ("Injunction", "A court order stopping someone from doing something (or ordering them to do something) temporarily or permanently."),
+            ("Limitation Period", "The deadline by which a case must be filed — if you miss it, the court may refuse to hear you."),
+        ]
+
+        cols = st.columns(2)
+        for i, (term, explanation) in enumerate(common_terms):
+            with cols[i % 2]:
+                st.markdown(f"""
+                <div style="background:#080c14;border:1px solid #1e3a5f;border-radius:6px;
+                    padding:12px 16px;margin:4px 0;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;
+                        color:#4a9eff;font-weight:700;margin-bottom:4px;">{term}</div>
+                    <div style="color:#7a8fa6;font-size:0.82rem;line-height:1.5;">{explanation}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
     # Cleanup
     os.unlink(tmp_path)

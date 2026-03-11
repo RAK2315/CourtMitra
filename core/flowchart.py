@@ -1,12 +1,14 @@
 from typing import List, Dict
 
-# Color mapping for node types
+# Color mapping for node types — includes Indian court hierarchy types
 TYPE_COLORS = {
-    "fact":     ("📋", "#1e3a5f", "#4a9eff"),
-    "issue":    ("⚖️",  "#3d1f5f", "#a855f7"),
-    "argument": ("💬", "#1f3d2f", "#22c55e"),
-    "law":      ("📜", "#3d2f1f", "#f59e0b"),
-    "decision": ("🏛️", "#3d1f1f", "#ef4444"),
+    "jurisdiction": ("🏛️", "#0d2e1a", "#22c55e"),   # green — where case was filed
+    "fact":         ("📋", "#1e3a5f", "#4a9eff"),   # blue
+    "issue":        ("⚖️",  "#3d1f5f", "#a855f7"),   # purple
+    "argument":     ("💬", "#2a1f3d", "#818cf8"),   # indigo
+    "law":          ("📜", "#3d2f1f", "#f59e0b"),   # amber
+    "decision":     ("✅", "#1f3d1f", "#22c55e"),   # green — final order
+    "appeal":       ("🔺", "#1a1a0d", "#facc15"),   # yellow — further appeal path
 }
 
 

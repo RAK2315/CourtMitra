@@ -18,7 +18,6 @@ def get_nlp():
 
 
 # ── Noise word sets ───────────────────────────────────────────────────────────
-# Any spaCy PERSON entity whose text contains these words is discarded
 PERSON_NOISE_WORDS = {
     "order", "rule", "section", "article", "act", "court", "bench",
     "appellant", "respondent", "petitioner", "plaintiff", "defendant",
@@ -29,9 +28,17 @@ PERSON_NOISE_WORDS = {
     "misc", "code", "facts", "annexure", "exhibit",
     "municipal", "nagar", "colony", "street", "road", "village",
     "azad", "bazar", "chowk", "ward", "taluka", "tehsil", "district",
+    # Indian states and cities misread as persons
+    "kerala", "punjab", "haryana", "gujarat", "maharashtra", "karnataka",
+    "pradesh", "bengal", "rajasthan", "bihar", "odisha", "assam",
+    "bharat", "hindustan", "india",
+    "kanpur", "lucknow", "mumbai", "delhi", "chennai", "kolkata",
+    "moradabad", "gwalior", "nagpur", "patna", "agra", "varanasi",
+    # Common English words that appear in legal text
+    "body", "cane", "sugar", "state", "party", "board", "trust",
+    "fund", "bank", "union", "authority",
 }
 
-# Any spaCy ORG entity whose text contains these words is discarded
 ORG_NOISE_WORDS = {
     "rs.", "rs", "inr", "rule", "order", "section", "sub-rule",
     "xli", "review petition", "civil appeal", "writ petition",
@@ -39,6 +46,7 @@ ORG_NOISE_WORDS = {
     "hereinafter", "civil suit no",
     "rupees", "lacs", "lakhs", "crores",
     "municipal no", "plot no", "survey no", "flat no", "ward no",
+    "date:", "digitally signed", "reason:",
 }
 
 
@@ -56,7 +64,6 @@ def _is_person_noise(name: str) -> bool:
         return True
     if any(word in n for word in PERSON_NOISE_WORDS):
         return True
-    # Discard single-word all-caps that aren't real names (e.g. "DATE", "VERSUS")
     if name.isupper() and ' ' not in name and len(name) < 6:
         return True
     return False
@@ -72,15 +79,13 @@ def _is_org_noise(org: str) -> bool:
         return True
     if org.isupper() and len(org) > 25:
         return True
-    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor"}:
+    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor", "State"}:
         return True
-    # Truncated words ending with (S — APPELLANT(S, RESPONDENT(S
     if re.search(r'\([A-Z]$', org):
         return True
-    # "Original Suit No" type patterns
     if re.match(r'(?:original\s+suit|civil\s+suit|criminal\s+case)\s+no', o):
         return True
-    # All-caps two-word entity with no digits = likely a person name (e.g. DEEPAK SINGH)
+    # All-caps two-word entity with no company suffix = likely a person name
     words = org.strip().split()
     if (org.isupper() and len(words) == 2
             and all(w.isalpha() for w in words)
@@ -89,7 +94,7 @@ def _is_org_noise(org: str) -> bool:
     return False
 
 
-# ── Regex patterns ────────────────────────────────────────────────────────────
+# ── Patterns ──────────────────────────────────────────────────────────────────
 CASE_NUMBER_PATTERNS = [
     r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
     r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|Civil Suit|Criminal Case|'
@@ -107,12 +112,10 @@ IPC_SECTION_PATTERNS = [
     r'of\s+(?:the\s+)?(?:IPC|Indian Penal Code)\b',
     r'\bSections?\s+\d+[A-Z]?(?:\s*[,&]\s*\d+[A-Z]?)+\s+(?:and\s+\d+[A-Z]\s+)?'
     r'of\s+(?:the\s+)?IPC\b',
-    # section 464 of the I.P.C.
     r'\bsection\s+\d+[A-Z]?\s+of\s+(?:the\s+)?I\.P\.C\.\b',
 ]
 
 ACT_PATTERNS = [
-    # Must start with The or a Capital word — never "of the X Act"
     r'\b(?:The\s+)?[A-Z][A-Za-z]{2,}(?:\s+[A-Za-z]{2,}){0,6}\s+Act,?\s*\d{4}\b',
     r'\bCode of Criminal Procedure\b|\bCrPC\b|\bCr\.P\.C\.\b',
     r'\bCode of Civil Procedure\b|\bCPC\b|\bC\.P\.C\.\b',
@@ -122,31 +125,54 @@ ACT_PATTERNS = [
     r'\bHindu Marriage Act\b',
 ]
 
-# Rs. must be followed by at least 3 digits (so Rs.2,000 matches, rs, and rs.3 don't)
+# Statutes = Constitutional Articles + key CPC/CrPC provisions
+STATUTE_PATTERNS = [
+    # Article 14, Art. 21, Art. 39(d) etc.
+    r'\b(?:Article|Art\.)\s*\d+[A-Z]?(?:\s*\(\w+\))?\b',
+    # Order XLI Rule 27 CPC
+    r'\bOrder\s+[IVXLCDM]+\s+Rule\s+\d+[A-Z]?\b',
+    # Section 482 CrPC / Section 300A IPC style cross-refs
+    r'\bSection\s+\d+[A-Z]?\s+(?:of\s+(?:the\s+)?)?(?:CrPC|Cr\.P\.C\.|CPC|C\.P\.C\.)\b',
+]
+
+# Cited cases: "Name v. Name, (YYYY) N SCC NNN" or "AIR YYYY SC NNN"
+CITED_CASE_PATTERNS = [
+    r'[A-Z][A-Za-z\s\.]+v\.\s*[A-Z][A-Za-z\s\.]+,\s*(?:\(\d{4}\)\s*\d+\s*SCC\s*\d+|AIR\s*\d{4}\s*SC\s*\d+)',
+    r'[A-Z][A-Za-z\s\.]+vs\.?\s*[A-Z][A-Za-z\s\.]+\s+on\s+\d+\s+\w+,\s*\d{4}',
+]
+
 AMOUNT_PATTERNS = [
-    r'Rs\.?\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?(?:/-)?',   # Rs.2,000/- or Rs.1,00,000
-    r'Rs\.?\s*\d{4,}(?:\.\d{1,2})?(?:/-)?',                 # Rs.5000 or Rs.50000
-    r'Rs\.?\s*\d+(?:\.\d{2})?\s*(?:lakhs?|crores?)',        # Rs.5 lakhs
+    r'Rs\.?\s*\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?:/-)?',
+    r'Rs\.?\s*\d{4,}(?:\.\d{1,2})?(?:/-)?',
+    r'Rs\.?\s*\d+(?:\.\d{2})?\s*(?:lakhs?|crores?)',
     r'₹\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?',
     r'₹\s*\d{4,}',
     r'INR\s+\d{4,}',
+    # Pay scale format: Rs. 210-270
+    r'Rs\.?\s*\d{3,}-\d{3,}',
 ]
 
 DATE_PATTERNS = [
-    # 12th August, 2009 or 12th August 2009
     r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
     r'July|August|September|October|November|December),?\s+\d{4}\b',
-    # 12/03/2009 or 12-03-2009
     r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
-    # August 12, 2009 (American format sometimes in older judgments)
     r'\b(?:January|February|March|April|May|June|July|August|September|'
     r'October|November|December)\s+\d{1,2},?\s+\d{4}\b',
-    # 2009-03-12 (ISO)
     r'\b\d{4}-\d{2}-\d{2}\b',
 ]
 
 
 def extract_entities(text: str) -> Dict:
+    # Strip digital signature blocks before NLP
+    text = re.sub(
+        r'Digitally\s+[Ss]igned\s+by\s+.{0,80}?(?=\n|\Z)',
+        '', text, flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r'Signature\s+Not\s+Verified.{0,300}?(?=\n\n|\Z)',
+        '', text, flags=re.IGNORECASE | re.DOTALL
+    )
+
     nlp = get_nlp()
     doc = nlp(text[:100000])
 
@@ -176,22 +202,27 @@ def extract_entities(text: str) -> Dict:
         "organizations": orgs,
         "case_numbers": [],
         "ipc_sections": [],
+        "statutes": [],
         "acts_cited": [],
+        "cited_cases": [],
         "monetary_amounts": [],
         "key_dates": [],
     }
 
-    # ── Regex extraction ──────────────────────────────────────────────────────
     for p in CASE_NUMBER_PATTERNS:
         results["case_numbers"].extend(re.findall(p, text, re.IGNORECASE))
 
     for p in IPC_SECTION_PATTERNS:
         results["ipc_sections"].extend(re.findall(p, text, re.IGNORECASE))
 
+    for p in STATUTE_PATTERNS:
+        results["statutes"].extend(re.findall(p, text))  # no IGNORECASE — must be capitalised
+
     for p in ACT_PATTERNS:
-        # Do NOT use IGNORECASE here — act names must start with capital letter
-        # This prevents "of the Information Technology Act" from matching
-        results["acts_cited"].extend(re.findall(p, text))
+        results["acts_cited"].extend(re.findall(p, text))  # no IGNORECASE — act names are capitalised
+
+    for p in CITED_CASE_PATTERNS:
+        results["cited_cases"].extend(re.findall(p, text, re.IGNORECASE))
 
     for p in AMOUNT_PATTERNS:
         results["monetary_amounts"].extend(re.findall(p, text, re.IGNORECASE))
@@ -209,7 +240,6 @@ def extract_entities(text: str) -> Dict:
             if not item or len(item) <= 2:
                 continue
             norm = _normalize(item)
-            # Skip if already have something with same 28-char prefix
             if any(norm[:28] == s[:28] for s in seen_norms):
                 continue
             seen_norms.add(norm)
@@ -224,18 +254,19 @@ def extract_entities(text: str) -> Dict:
 def extract_judgment_outcome(text: str) -> str:
     text_lower = text.lower()
     patterns = [
-        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b',     "Appeal Dismissed ❌"),
-        (r'\bappeal\s+is\s+(?:hereby\s+)?allowed\b',        "Appeal Allowed ✅"),
-        (r'\bappeals?\s+(?:are\s+|hereby\s+)?allowed\b',    "Appeal Allowed ✅"),
-        (r'\bpetition\s+is\s+(?:hereby\s+)?allowed\b',      "Petition Allowed ✅"),
-        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b',      "Petition Dismissed ❌"),
-        (r'\bsuit\s+(?:is\s+|stand[s]?\s+)?dismissed\b',    "Suit Dismissed ❌"),
-        (r'\bmatter\s+is\s+remanded\b',                      "Remanded to Lower Court 🔄"),
-        (r'\bremanded\s+back\b',                             "Remanded to Lower Court 🔄"),
-        (r'\bconviction\s+(?:is\s+)?set\s+aside\b',         "Conviction Set Aside ✅"),
-        (r'\bconviction\s+upheld\b',                         "Conviction Upheld ❌"),
-        (r'\bpartly\s+allowed\b',                            "Partly Allowed ⚖️"),
-        (r'\bsettled\b',                                     "Settled 🤝"),
+        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b',   "Appeal Dismissed ❌"),
+        (r'\bappeal\s+is\s+(?:hereby\s+)?allowed\b',      "Appeal Allowed ✅"),
+        (r'\bappeals?\s+(?:are\s+|hereby\s+)?allowed\b',  "Appeal Allowed ✅"),
+        (r'\bpetition\s+is\s+(?:hereby\s+)?allowed\b',    "Petition Allowed ✅"),
+        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b',    "Petition Dismissed ❌"),
+        (r'\bsuit\s+(?:is\s+|stand[s]?\s+)?dismissed\b',  "Suit Dismissed ❌"),
+        (r'\bmatter\s+is\s+remanded\b',                    "Remanded to Lower Court 🔄"),
+        (r'\bremanded\s+back\b',                           "Remanded to Lower Court 🔄"),
+        (r'\bconviction\s+(?:is\s+)?set\s+aside\b',       "Conviction Set Aside ✅"),
+        (r'\bconviction\s+upheld\b',                       "Conviction Upheld ❌"),
+        (r'\bpartly\s+allowed\b',                          "Partly Allowed ⚖️"),
+        (r'\bpetition\s+allowed\b',                        "Petition Allowed ✅"),
+        (r'\bsettled\b',                                   "Settled 🤝"),
     ]
     for pattern, label in patterns:
         if re.search(pattern, text_lower):
