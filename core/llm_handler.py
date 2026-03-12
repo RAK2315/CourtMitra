@@ -119,82 +119,87 @@ def summarize_judgment(chunks: List[Dict], entities: Dict, language: str = "Engl
     ])
     lang_instruction = "Respond entirely in simple Hindi (Devanagari script)." if language == "Hindi" else ""
 
-    prompt = f"""You are CourtMitra — explain this Indian court judgment to an ordinary Indian citizen with no legal background.
-Tone: warm, clear, like a knowledgeable friend. NOT robotic. Use real names. Be specific.
+    prompt = f"""You are CourtMitra. Explain this Indian court judgment to an ordinary citizen in plain language.
 
-STRICT RULES for plain_summary:
-- Do NOT repeat the same fact twice
-- Each sentence must add NEW information
-- Sentence 1: Who are the parties and what was the core dispute
-- Sentence 2: What the lower court / previous proceedings decided
-- Sentence 3: What the Supreme/High Court found and why
-- Sentence 4: Final outcome — who won, what was ordered
-- Use actual names from the judgment, not "the appellant" or "the petitioner"
+RULES:
+- Use real names, not "the petitioner" or "the appellant"
+- 4 sentences in plain_summary, each adding NEW info (no repetition)
+- Sentence 1: parties + dispute, Sentence 2: lower court/background, Sentence 3: what this court found, Sentence 4: final outcome
 
-JUDGMENT EXCERPTS:
+JUDGMENT:
 {context}
 
-ENTITIES:
-- Cases: {', '.join(entities.get('case_numbers', [])) or 'N/A'}
-- Acts: {', '.join(entities.get('acts_cited', [])[:3]) or 'N/A'}
-- Articles: {', '.join(entities.get('statutes', [])[:3]) or 'N/A'}
+ENTITIES: Cases={', '.join(entities.get('case_numbers', [])) or 'N/A'} | Acts={', '.join(entities.get('acts_cited', [])[:2]) or 'N/A'}
 
 {lang_instruction}
 
-YOU MUST respond ONLY with a valid JSON object. No explanation before or after. No markdown. Start with {{ and end with }}:
-{{
-  "case_type": "one of: Criminal / Civil / Constitutional / Family / Labour / Consumer / Property / Service",
-  "plain_summary": "exactly 4 sentences, each adding new info, no repetition, use real names",
-  "key_issues": ["specific issue 1 in plain words", "specific issue 2", "specific issue 3"],
-  "what_court_decided": "1 sentence — exactly what was ordered, any specific relief granted",
-  "next_steps": ["step 1 for the person affected", "step 2", "step 3"],
-  "important_warning": "one friendly reminder to consult a lawyer"
-}}"""
+JSON only (no markdown, start with {{):
+{{"case_type":"Criminal/Civil/Constitutional/Family/Labour/Consumer/Property/Service","plain_summary":"4 sentences","key_issues":["issue1","issue2","issue3"],"what_court_decided":"1 sentence with specific relief","next_steps":["step1","step2","step3"],"important_warning":"consult a lawyer"}}"""
 
     messages = [
         {"role": "system", "content": "You are a JSON API. You output ONLY valid JSON with no explanation, no markdown, no code fences. Your entire response must be parseable by json.loads()."},
         {"role": "user", "content": prompt}
     ]
-    raw = _call_llm(messages, max_tokens=900)
+    raw = _call_llm(messages, max_tokens=1000)
     cleaned = _clean_json(raw)
 
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Second attempt: fix trailing commas
-        try:
-            fixed = re.sub(r',\s*([}\]])', r'\1', cleaned)
-            return json.loads(fixed)
-        except Exception:
-            pass
-
-    # Third attempt: try to extract fields manually from raw text
-    # This handles cases where model returns JSON with unescaped quotes inside strings
-    try:
-        # Replace newlines inside strings before parsing
-        cleaned2 = re.sub(r'\n', ' ', cleaned)
-        cleaned2 = re.sub(r',\s*([}\]])', r'\1', cleaned2)
-        return json.loads(cleaned2)
-    except Exception:
-        pass
-
-    # Last resort: return raw text as plain summary so user sees something useful
-    # Strip any JSON-like wrapper if present
-    summary_text = raw
-    for key in ['"plain_summary":', 'plain_summary:']:
-        if key in raw:
+    def _try_parse(s):
+        """Try multiple JSON repair strategies."""
+        for attempt in [
+            s,
+            re.sub(r',\s*([}\]])', r'\1', s),                    # trailing commas
+            re.sub(r'\n', ' ', s),                                 # newlines in strings
+            re.sub(r',\s*([}\]])', r'\1', re.sub(r'\n', ' ', s)), # both
+        ]:
             try:
-                start = raw.index(key) + len(key)
-                chunk = raw[start:].strip().lstrip('"').lstrip("'")
-                end = chunk.index('"')
-                summary_text = chunk[:end]
-                break
+                return json.loads(attempt)
             except Exception:
-                pass
+                continue
+        return None
+
+    result = _try_parse(cleaned)
+    if result and isinstance(result, dict):
+        # Fill any missing keys with defaults
+        result.setdefault("case_type", "Unknown")
+        result.setdefault("plain_summary", "")
+        result.setdefault("key_issues", [])
+        result.setdefault("what_court_decided", "")
+        result.setdefault("next_steps", [])
+        result.setdefault("important_warning", "Please consult a qualified lawyer.")
+        return result
+
+    # If JSON is truncated (model hit token limit), try to recover by closing it
+    truncated = cleaned.rstrip().rstrip(',')
+    # Count open brackets to close
+    opens = truncated.count('{') - truncated.count('}')
+    arr_opens = truncated.count('[') - truncated.count(']')
+    if opens > 0 or arr_opens > 0:
+        recovery = truncated
+        recovery += ']' * arr_opens + '}' * opens
+        result = _try_parse(recovery)
+        if result and isinstance(result, dict):
+            result.setdefault("case_type", "Unknown")
+            result.setdefault("plain_summary", "")
+            result.setdefault("key_issues", [])
+            result.setdefault("what_court_decided", "")
+            result.setdefault("next_steps", [])
+            result.setdefault("important_warning", "Please consult a qualified lawyer.")
+            return result
+
+    # Absolute last resort — extract plain_summary from raw text at minimum
+    summary_text = ""
+    m = re.search(r'"plain_summary"\s*:\s*"(.*?)(?<!\\)"', cleaned, re.DOTALL)
+    if m:
+        summary_text = m.group(1).replace('\\"', '"')
+
+    case_type = "Unknown"
+    m2 = re.search(r'"case_type"\s*:\s*"([^"]+)"', cleaned)
+    if m2:
+        case_type = m2.group(1)
 
     return {
-        "case_type": "Unknown",
-        "plain_summary": summary_text[:800] if len(summary_text) > 10 else "Could not generate summary — please try again.",
+        "case_type": case_type,
+        "plain_summary": summary_text or raw[:600],
         "key_issues": [],
         "what_court_decided": "",
         "next_steps": [],
@@ -222,59 +227,62 @@ YOU MUST respond ONLY with a valid JSON array. No explanation before or after. S
 Types: jurisdiction, fact, issue, argument, law, decision, appeal only. 5-7 steps total."""
 
 def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
-    context = "\n\n".join([c["content"][:500] for c in chunks[:4]])
+    context = "\n\n".join([c["content"][:400] for c in chunks[:3]])
 
-    prompt = f"""Analyze this Indian court judgment and extract the judge's reasoning as 6 steps.
+    prompt = f"""Analyze this Indian court judgment. Return 6 reasoning steps as a JSON array.
 
 JUDGMENT TEXT:
 {context}
 
-Return a JSON array with exactly 6 objects. Each detail must be a FULL sentence of 15-25 words explaining what actually happened in THIS case.
+Each step needs: step (number), label (3-5 words), detail (one specific sentence using real names/facts from THIS case — not generic), type (one of: jurisdiction/fact/issue/law/decision/appeal).
 
-Rules for detail field:
-- Use actual names, facts, articles from the judgment
-- Do NOT use placeholder text like "Court established jurisdiction"
-- Each detail must be specific to this case
+Step 1=jurisdiction (which court, which Article), Step 2=fact, Step 3=issue, Step 4=law, Step 5=decision, Step 6=appeal avenue.
 
-Types to use in order: jurisdiction, fact, issue, law, decision, appeal
+BAD detail: "Court established jurisdiction." GOOD detail: "Randhir Singh filed Writ Petition No.4676 of 1978 directly in the Supreme Court under Article 32."
 
-Example of GOOD detail: "Randhir Singh filed Writ Petition No. 4676 of 1978 under Article 32 directly in the Supreme Court."
-Example of BAD detail: "Court established jurisdiction over the matter."
-
-JSON array format:
-[
-  {{"step": 1, "label": "short title", "detail": "specific sentence about this case", "type": "jurisdiction"}},
-  {{"step": 2, "label": "short title", "detail": "specific sentence about this case", "type": "fact"}},
-  {{"step": 3, "label": "short title", "detail": "specific sentence about this case", "type": "issue"}},
-  {{"step": 4, "label": "short title", "detail": "specific sentence about this case", "type": "law"}},
-  {{"step": 5, "label": "short title", "detail": "specific sentence about this case", "type": "decision"}},
-  {{"step": 6, "label": "Further Appeal Avenue", "detail": "specific sentence about appeal options from this judgment", "type": "appeal"}}
-]"""
+JSON array only, no other text:"""
 
     messages = [
         {"role": "system", "content": "You are a JSON API. Output ONLY a valid JSON array. No explanation, no markdown, no code fences. Use only straight double quotes. Do not use quotes inside string values."},
         {"role": "user", "content": prompt}
     ]
-    raw = _call_llm(messages, max_tokens=900, temperature=0.2)
+    raw = _call_llm(messages, max_tokens=1000, temperature=0.2)
     cleaned = _clean_json(raw)
 
-    # Multiple parse attempts
-    for attempt in [
-        cleaned,
-        re.sub(r',\s*([}\]])', r'\1', cleaned),           # fix trailing commas
-        re.sub(r'\n\s*', ' ', cleaned),                     # collapse newlines
-        re.sub(r'(?<!\\)"(?=[^:,\[\]{}])', '\\"', cleaned), # escape inner quotes
-    ]:
-        try:
-            result = json.loads(attempt)
-            if isinstance(result, list) and len(result) > 0:
-                return result
-        except Exception:
-            continue
+    def _try_parse_list(s):
+        for attempt in [
+            s,
+            re.sub(r',\s*([}\]])', r'\1', s),
+            re.sub(r'\n', ' ', s),
+            re.sub(r',\s*([}\]])', r'\1', re.sub(r'\n', ' ', s)),
+        ]:
+            try:
+                result = json.loads(attempt)
+                if isinstance(result, list) and len(result) > 0:
+                    return result
+            except Exception:
+                continue
+        return None
 
-    # Final fallback — should rarely hit this now
+    result = _try_parse_list(cleaned)
+    if result:
+        return result
+
+    # Try truncation recovery — close any open brackets
+    truncated = cleaned.rstrip().rstrip(',')
+    # Remove last incomplete object if it exists
+    last_complete = truncated.rfind('}')
+    if last_complete != -1:
+        truncated = truncated[:last_complete+1]
+        opens = truncated.count('[') - truncated.count(']')
+        recovery = truncated + ']' * max(opens, 1)
+        result = _try_parse_list(recovery)
+        if result:
+            return result
+
+    # Final fallback
     return [
-        {"step": 1, "label": "Jurisdiction", "detail": "Could not parse reasoning chain — try reloading the page.", "type": "jurisdiction"},
+        {"step": 1, "label": "Parse Error", "detail": "Reasoning chain could not be loaded — try clicking 'Reasoning Chain' tab again.", "type": "jurisdiction"},
     ]
 
 
