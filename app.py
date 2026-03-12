@@ -431,11 +431,34 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
         with col_dead:
             st.markdown('<div class="section-header" style="font-size:1rem;">⏰ Appeal Deadline</div>', unsafe_allow_html=True)
 
-            # Try to get judgment date from entities
+            # Extract judgment date smartly:
+            # 1. Look for date near end of document (where judgment date usually appears)
+            # 2. Look for patterns like "decided on", "dated", signature date
+            # 3. Fall back to last entity date only if recent (after 2000)
+            import re as _re
             judgment_date_str = ""
-            key_dates = entities.get("key_dates", [])
-            if key_dates:
-                judgment_date_str = key_dates[-1]  # last date is usually judgment date
+
+            # Search last 800 chars of text for a date — judgment date is always at end
+            tail = text[-800:] if len(text) > 800 else text
+            date_patterns_tail = [
+                r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December),?\s+\d{4})\b',
+                r'\b((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})\b',
+                r'\b(\d{4}-\d{2}-\d{2})\b',
+            ]
+            for pat in date_patterns_tail:
+                matches = _re.findall(pat, tail, _re.IGNORECASE)
+                if matches:
+                    judgment_date_str = matches[-1]  # last date in tail = judgment date
+                    break
+
+            # Fallback: use entity dates but only if year >= 2000 (avoids 1968 historical dates)
+            if not judgment_date_str:
+                key_dates = entities.get("key_dates", [])
+                for d in reversed(key_dates):
+                    year_match = _re.search(r'\b(19[8-9]\d|20\d{2})\b', d)
+                    if year_match and int(year_match.group(1)) >= 1982:
+                        judgment_date_str = d
+                        break
 
             deadline = calculate_appeal_deadline(case_type, judgment_date_str)
 
@@ -538,9 +561,9 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
         if st.button("🔍 Run Fairness Assessment", key="fairness_btn"):
             with st.spinner("Analyzing judgment for procedural concerns..."):
                 red_flags = detect_red_flags(text, top_chunks)
-            st.session_state["red_flags"] = red_flags
+            st.session_state[f"red_flags_{doc_name}"] = red_flags
 
-        red_flags = st.session_state.get("red_flags", None)
+        red_flags = st.session_state.get(f"red_flags_{doc_name}", None)
 
         if red_flags is None:
             st.markdown("""
@@ -552,92 +575,88 @@ if uploaded_file and os.getenv("GROQ_API_KEY"):
         else:
             danger_score = red_flags.get("danger_score", 0)
 
-        # Score color
-        if danger_score >= 60:
-            score_color = "#ef4444"
-            score_label = "Concerning"
-            score_bg = "#2e0d0d"
-        elif danger_score >= 30:
-            score_color = "#f59e0b"
-            score_label = "Some Issues"
-            score_bg = "#2e2a0d"
-        else:
-            score_color = "#22c55e"
-            score_label = "Looks Fair"
-            score_bg = "#0d2e1a"
+            # Score color
+            if danger_score >= 60:
+                score_color = "#ef4444"
+                score_label = "Concerning"
+                score_bg = "#2e0d0d"
+            elif danger_score >= 30:
+                score_color = "#f59e0b"
+                score_label = "Some Issues"
+                score_bg = "#2e2a0d"
+            else:
+                score_color = "#22c55e"
+                score_label = "Looks Fair"
+                score_bg = "#0d2e1a"
 
-        col_score, col_detail = st.columns([1, 2])
+            col_score, col_detail = st.columns([1, 2])
 
-        with col_score:
-            st.markdown(f"""
-            <div style="background:{score_bg};border:2px solid {score_color};
-                border-radius:10px;padding:24px;text-align:center;">
-                <div style="font-family:'Playfair Display',serif;font-size:3rem;
-                    color:{score_color};font-weight:900;line-height:1;">
-                    {danger_score}
-                </div>
-                <div style="color:{score_color};font-size:11px;letter-spacing:2px;
-                    margin-top:4px;font-weight:700;">{score_label.upper()}</div>
-                <div style="color:#555;font-size:10px;margin-top:8px;">out of 100</div>
-                <div style="background:#1a2a3a;border-radius:3px;height:6px;
-                    margin-top:12px;">
-                    <div style="background:{score_color};width:{danger_score}%;
-                        height:100%;border-radius:3px;"></div>
-                </div>
-            </div>
-            <div style="color:#555;font-size:10px;text-align:center;margin-top:8px;">
-                0 = perfectly fair · 100 = severely concerning
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col_detail:
-            # Overall assessment
-            assessment = red_flags.get("overall_assessment", "")
-            if assessment:
+            with col_score:
                 st.markdown(f"""
-                <div style="background:#0d1a2e;border-left:4px solid {score_color};
-                    padding:14px 16px;border-radius:0 8px 8px 0;margin-bottom:12px;
-                    font-size:13px;color:#d4c5a9;line-height:1.6;">
-                    {assessment}
+                <div style="background:{score_bg};border:2px solid {score_color};
+                    border-radius:10px;padding:24px;text-align:center;">
+                    <div style="font-family:'Playfair Display',serif;font-size:3rem;
+                        color:{score_color};font-weight:900;line-height:1;">
+                        {danger_score}
+                    </div>
+                    <div style="color:{score_color};font-size:11px;letter-spacing:2px;
+                        margin-top:4px;font-weight:700;">{score_label.upper()}</div>
+                    <div style="color:#555;font-size:10px;margin-top:8px;">out of 100</div>
+                    <div style="background:#1a2a3a;border-radius:3px;height:6px;margin-top:12px;">
+                        <div style="background:{score_color};width:{danger_score}%;
+                            height:100%;border-radius:3px;"></div>
+                    </div>
+                </div>
+                <div style="color:#555;font-size:10px;text-align:center;margin-top:8px;">
+                    0 = perfectly fair · 100 = severely concerning
                 </div>
                 """, unsafe_allow_html=True)
 
-            # Red flags
-            flags = red_flags.get("flags", [])
-            if flags:
-                st.markdown("<div style='font-size:12px;color:#7a8fa6;margin-bottom:6px;'>⚠️ Issues detected:</div>", unsafe_allow_html=True)
-                for flag in flags:
-                    sev = flag.get("severity", "medium")
-                    sev_color = "#ef4444" if sev == "high" else "#f59e0b" if sev == "medium" else "#4a9eff"
+            with col_detail:
+                assessment = red_flags.get("overall_assessment", "")
+                if assessment:
                     st.markdown(f"""
-                    <div style="background:#0a1020;border-left:3px solid {sev_color};
-                        padding:10px 14px;margin:4px 0;border-radius:0 6px 6px 0;">
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                            <span style="background:{sev_color}22;color:{sev_color};
-                                font-size:9px;padding:1px 6px;border-radius:10px;
-                                font-weight:700;letter-spacing:1px;">{sev.upper()}</span>
-                            <span style="color:#d4c5a9;font-size:12px;font-weight:600;">
-                                {flag.get('issue','')}
-                            </span>
-                        </div>
-                        <div style="color:#7a8fa6;font-size:11px;padding-left:4px;">
-                            {flag.get('detail','')}
-                        </div>
+                    <div style="background:#0d1a2e;border-left:4px solid {score_color};
+                        padding:14px 16px;border-radius:0 8px 8px 0;margin-bottom:12px;
+                        font-size:13px;color:#d4c5a9;line-height:1.6;">
+                        {assessment}
                     </div>
                     """, unsafe_allow_html=True)
 
-            # Positive observations
-            positives = red_flags.get("positive_observations", [])
-            if positives:
-                st.markdown("<div style='font-size:12px;color:#7a8fa6;margin-top:10px;margin-bottom:6px;'>✅ What the court did right:</div>", unsafe_allow_html=True)
-                for p in positives:
-                    st.markdown(f"""
-                    <div style="background:#0d2e1a;border-left:3px solid #22c55e;
-                        padding:8px 14px;margin:4px 0;border-radius:0 6px 6px 0;
-                        font-size:12px;color:#9ab4cc;">
-                        {p}
-                    </div>
-                    """, unsafe_allow_html=True)
+                flags = red_flags.get("flags", [])
+                if flags:
+                    st.markdown("<div style='font-size:12px;color:#7a8fa6;margin-bottom:6px;'>⚠️ Issues detected:</div>", unsafe_allow_html=True)
+                    for flag in flags:
+                        sev = flag.get("severity", "medium")
+                        sev_color = "#ef4444" if sev == "high" else "#f59e0b" if sev == "medium" else "#4a9eff"
+                        st.markdown(f"""
+                        <div style="background:#0a1020;border-left:3px solid {sev_color};
+                            padding:10px 14px;margin:4px 0;border-radius:0 6px 6px 0;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                                <span style="background:{sev_color}22;color:{sev_color};
+                                    font-size:9px;padding:1px 6px;border-radius:10px;
+                                    font-weight:700;letter-spacing:1px;">{sev.upper()}</span>
+                                <span style="color:#d4c5a9;font-size:12px;font-weight:600;">
+                                    {flag.get('issue','')}
+                                </span>
+                            </div>
+                            <div style="color:#7a8fa6;font-size:11px;padding-left:4px;">
+                                {flag.get('detail','')}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                positives = red_flags.get("positive_observations", [])
+                if positives:
+                    st.markdown("<div style='font-size:12px;color:#7a8fa6;margin-top:10px;margin-bottom:6px;'>✅ What the court did right:</div>", unsafe_allow_html=True)
+                    for p in positives:
+                        st.markdown(f"""
+                        <div style="background:#0d2e1a;border-left:3px solid #22c55e;
+                            padding:8px 14px;margin:4px 0;border-radius:0 6px 6px 0;
+                            font-size:12px;color:#9ab4cc;">
+                            {p}
+                        </div>
+                        """, unsafe_allow_html=True)
 
         st.markdown("""
         <div class="warning-box" style="margin-top:16px;">

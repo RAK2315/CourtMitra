@@ -1,243 +1,197 @@
 import re
+import json
+from datetime import datetime, timedelta
 from typing import Dict, List
-import spacy
+from groq import Groq
+import os
 
-_nlp = None
-
-
-def get_nlp():
-    global _nlp
-    if _nlp is None:
-        try:
-            _nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            import subprocess
-            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-            _nlp = spacy.load("en_core_web_sm")
-    return _nlp
-
-
-# ── Noise word sets ───────────────────────────────────────────────────────────
-# Any spaCy PERSON entity whose text contains these words is discarded
-PERSON_NOISE_WORDS = {
-    "order", "rule", "section", "article", "act", "court", "bench",
-    "appellant", "respondent", "petitioner", "plaintiff", "defendant",
-    "judgment", "decree", "appeal", "petition", "honourable",
-    "cpc", "ipc", "crpc", "sub-rule", "clause", "schedule",
-    "survey", "no.", "hereinafter", "per contra", "supra",
-    "xli", "xlii", "xliii", "xliv", "viz", "vide",
-    "misc", "code", "facts", "annexure", "exhibit",
-    "municipal", "nagar", "colony", "street", "road", "village",
-    "azad", "bazar", "chowk", "ward", "taluka", "tehsil", "district",
+# ── Fundamental Rights ────────────────────────────────────────────────────────
+FUNDAMENTAL_RIGHTS = {
+    "Article 14": ("Right to Equality", "Every person is equal before the law. Nobody can be treated differently without a valid reason."),
+    "Article 19": ("Freedom of Speech & Expression", "Citizens have the right to speak freely, assemble peacefully, and move anywhere in India."),
+    "Article 20": ("Protection Against Arbitrary Conviction", "No one can be punished for an act that wasn't a crime when it was done. No double punishment."),
+    "Article 21": ("Right to Life & Personal Liberty", "No person can be deprived of their life or freedom except by a fair legal process."),
+    "Article 21A": ("Right to Education", "Every child aged 6–14 has the right to free and compulsory education."),
+    "Article 22": ("Protection Against Arbitrary Arrest", "Every arrested person has the right to know why they're arrested and to consult a lawyer."),
+    "Article 23": ("Prohibition of Forced Labour", "Human trafficking and forced labour are banned."),
+    "Article 24": ("Prohibition of Child Labour", "Children under 14 cannot work in factories, mines, or hazardous work."),
+    "Article 25": ("Freedom of Religion", "Every person has the right to practice and propagate their religion."),
+    "Article 32": ("Right to Constitutional Remedies", "Every citizen can approach the Supreme Court directly if their fundamental rights are violated."),
+    "Article 226": ("High Court Writ Jurisdiction", "Citizens can approach the High Court to enforce their legal rights."),
+    "Article 300A": ("Right to Property", "No person can be deprived of their property without the authority of law."),
 }
 
-# Any spaCy ORG entity whose text contains these words is discarded
-ORG_NOISE_WORDS = {
-    "rs.", "rs", "inr", "rule", "order", "section", "sub-rule",
-    "xli", "review petition", "civil appeal", "writ petition",
-    "appellate jurisdiction", "apellate jurisdiction",
-    "hereinafter", "civil suit no",
-    "rupees", "lacs", "lakhs", "crores",
-    "municipal no", "plot no", "survey no", "flat no", "ward no",
+# ── Appeal Deadlines ──────────────────────────────────────────────────────────
+APPEAL_DEADLINES = {
+    "Criminal": {
+        "days": 90,
+        "court": "Supreme Court of India",
+        "section": "Section 374 CrPC",
+        "note": "Appeal against conviction to Sessions Court within 30 days; to HC within 60 days; to SC within 90 days."
+    },
+    "Civil": {
+        "days": 90,
+        "court": "Higher Court",
+        "section": "Order 41 CPC",
+        "note": "First appeal to District Court within 30 days; second appeal to HC within 90 days of HC decree."
+    },
+    "Family": {
+        "days": 90,
+        "court": "High Court",
+        "section": "Section 28 Hindu Marriage Act",
+        "note": "Appeal against family court order to High Court within 90 days."
+    },
+    "Consumer": {
+        "days": 30,
+        "court": "State Consumer Commission",
+        "section": "Section 41 Consumer Protection Act 2019",
+        "note": "Appeal against District Commission order within 30 days to State Commission."
+    },
+    "Labour": {
+        "days": 60,
+        "court": "High Court",
+        "section": "Article 226 / Section 10 Industrial Disputes Act",
+        "note": "Challenge Labour Court or Industrial Tribunal order in High Court under Article 226 (writ jurisdiction)."
+    },
+    "Service": {
+        "days": 90,
+        "court": "High Court / Supreme Court",
+        "section": "Article 226 / Article 136",
+        "note": "Challenge service matter order in High Court (Article 226) or Supreme Court by SLP (Article 136) within 90 days."
+    },
+    "Constitutional": {
+        "days": 90,
+        "court": "Supreme Court of India",
+        "section": "Article 136",
+        "note": "Special Leave Petition to Supreme Court within 90 days of HC judgment."
+    },
+    "Property": {
+        "days": 90,
+        "court": "High Court / Supreme Court",
+        "section": "Order 41 CPC / Article 136",
+        "note": "Appeal within 90 days. Limitation period may vary — consult a lawyer immediately."
+    },
 }
 
 
-def _normalize(s: str) -> str:
-    s = s.lower().strip()
-    s = re.sub(r'\s+', ' ', s)
-    return s
-
-
-def _is_person_noise(name: str) -> bool:
-    n = name.lower()
-    if len(n) <= 3:
-        return True
-    if any(c.isdigit() for c in name):
-        return True
-    if any(word in n for word in PERSON_NOISE_WORDS):
-        return True
-    # Discard single-word all-caps that aren't real names (e.g. "DATE", "VERSUS")
-    if name.isupper() and ' ' not in name and len(name) < 6:
-        return True
-    return False
-
-
-def _is_org_noise(org: str) -> bool:
-    o = org.lower()
-    if len(o) <= 4:
-        return True
-    if any(word in o for word in ORG_NOISE_WORDS):
-        return True
-    if re.match(r'^\d', o):
-        return True
-    if org.isupper() and len(org) > 25:
-        return True
-    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor"}:
-        return True
-    # Truncated words ending with (S — APPELLANT(S, RESPONDENT(S
-    if re.search(r'\([A-Z]$', org):
-        return True
-    # "Original Suit No" type patterns
-    if re.match(r'(?:original\s+suit|civil\s+suit|criminal\s+case)\s+no', o):
-        return True
-    # All-caps two-word entity with no digits = likely a person name (e.g. DEEPAK SINGH)
-    words = org.strip().split()
-    if (org.isupper() and len(words) == 2
-            and all(w.isalpha() for w in words)
-            and not any(w.lower() in {"ltd", "pvt", "inc", "corp", "co"} for w in words)):
-        return True
-    return False
-
-
-# ── Regex patterns ────────────────────────────────────────────────────────────
-CASE_NUMBER_PATTERNS = [
-    r'\b(?:Civil Appeal|Criminal Appeal|Writ Petition|SLP|Special Leave Petition|'
-    r'W\.P\.|C\.A\.|Crl\.A\.|Review Petition|First Appeal|Civil Suit|Criminal Case|'
-    r'CRL\.A\.|CRL\.P\.|W\.P\.\(C\))\s*(?:Nos?\.?)?\s*[\d][\d\-]*'
-    r'(?:\s*(?:of|OF)\s*\d{4})?\b',
-    r'\b\d{1,6}\s*/\s*\d{4}\b',
-    r'\b\d{4}\s+INSC\s+\d+\b',
-]
-
-IPC_SECTION_PATTERNS = [
-    r'\bSections?\s+\d+[A-Z]?(?:\s*,\s*\d+[A-Z]?)*(?:\s+and\s+\d+[A-Z]?)?\s+'
-    r'(?:of\s+(?:the\s+)?)?(?:IPC|I\.P\.C\.|Indian Penal Code)\b',
-    r'\bIPC\s+[Ss]ections?\s+\d+[A-Z]?\b',
-    r'\bSections?\s+\d+[A-Z]?\s*(?:,\s*\d+[A-Z]?\s*)*(?:and\s+\d+[A-Z]?\s+)?'
-    r'of\s+(?:the\s+)?(?:IPC|Indian Penal Code)\b',
-    r'\bSections?\s+\d+[A-Z]?(?:\s*[,&]\s*\d+[A-Z]?)+\s+(?:and\s+\d+[A-Z]\s+)?'
-    r'of\s+(?:the\s+)?IPC\b',
-    # section 464 of the I.P.C.
-    r'\bsection\s+\d+[A-Z]?\s+of\s+(?:the\s+)?I\.P\.C\.\b',
-]
-
-ACT_PATTERNS = [
-    # Must start with The or a Capital word — never "of the X Act"
-    r'\b(?:The\s+)?[A-Z][A-Za-z]{2,}(?:\s+[A-Za-z]{2,}){0,6}\s+Act,?\s*\d{4}\b',
-    r'\bCode of Criminal Procedure\b|\bCrPC\b|\bCr\.P\.C\.\b',
-    r'\bCode of Civil Procedure\b|\bCPC\b|\bC\.P\.C\.\b',
-    r'\bConstitution of India\b',
-    r'\bIndian Evidence Act\b',
-    r'\bTransfer of Property Act\b',
-    r'\bHindu Marriage Act\b',
-]
-
-# Rs. must be followed by at least 3 digits (so Rs.2,000 matches, rs, and rs.3 don't)
-AMOUNT_PATTERNS = [
-    r'Rs\.?\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?(?:/-)?',   # Rs.2,000/- or Rs.1,00,000
-    r'Rs\.?\s*\d{4,}(?:\.\d{1,2})?(?:/-)?',                 # Rs.5000 or Rs.50000
-    r'Rs\.?\s*\d+(?:\.\d{2})?\s*(?:lakhs?|crores?)',        # Rs.5 lakhs
-    r'₹\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?',
-    r'₹\s*\d{4,}',
-    r'INR\s+\d{4,}',
-]
-
-DATE_PATTERNS = [
-    # 12th August, 2009 or 12th August 2009
-    r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
-    r'July|August|September|October|November|December),?\s+\d{4}\b',
-    # 12/03/2009 or 12-03-2009
-    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
-    # August 12, 2009 (American format sometimes in older judgments)
-    r'\b(?:January|February|March|April|May|June|July|August|September|'
-    r'October|November|December)\s+\d{1,2},?\s+\d{4}\b',
-    # 2009-03-12 (ISO)
-    r'\b\d{4}-\d{2}-\d{2}\b',
-]
-
-
-def extract_entities(text: str) -> Dict:
-    nlp = get_nlp()
-    doc = nlp(text[:100000])
-
-    # ── spaCy NER ─────────────────────────────────────────────────────────────
-    persons, seen_p = [], set()
-    for ent in doc.ents:
-        if ent.label_ == "PERSON":
-            name = ent.text.strip()
-            if not _is_person_noise(name) and name.lower() not in seen_p:
-                seen_p.add(name.lower())
-                persons.append(name)
-                if len(persons) >= 7:
-                    break
-
-    orgs, seen_o = [], set()
-    for ent in doc.ents:
-        if ent.label_ == "ORG":
-            org = ent.text.strip()
-            if not _is_org_noise(org) and org.lower() not in seen_o:
-                seen_o.add(org.lower())
-                orgs.append(org)
-                if len(orgs) >= 7:
-                    break
-
-    results = {
-        "persons_mentioned": persons,
-        "organizations": orgs,
-        "case_numbers": [],
-        "ipc_sections": [],
-        "acts_cited": [],
-        "monetary_amounts": [],
-        "key_dates": [],
-    }
-
-    # ── Regex extraction ──────────────────────────────────────────────────────
-    for p in CASE_NUMBER_PATTERNS:
-        results["case_numbers"].extend(re.findall(p, text, re.IGNORECASE))
-
-    for p in IPC_SECTION_PATTERNS:
-        results["ipc_sections"].extend(re.findall(p, text, re.IGNORECASE))
-
-    for p in ACT_PATTERNS:
-        # Do NOT use IGNORECASE here — act names must start with capital letter
-        # This prevents "of the Information Technology Act" from matching
-        results["acts_cited"].extend(re.findall(p, text))
-
-    for p in AMOUNT_PATTERNS:
-        results["monetary_amounts"].extend(re.findall(p, text, re.IGNORECASE))
-
-    for p in DATE_PATTERNS:
-        results["key_dates"].extend(re.findall(p, text, re.IGNORECASE))
-
-    # ── Deduplicate (prefix-aware) ────────────────────────────────────────────
-    for key in results:
-        if not isinstance(results[key], list):
-            continue
-        seen_norms, cleaned = set(), []
-        for item in results[key]:
-            item = item.strip()
-            if not item or len(item) <= 2:
-                continue
-            norm = _normalize(item)
-            # Skip if already have something with same 28-char prefix
-            if any(norm[:28] == s[:28] for s in seen_norms):
-                continue
-            seen_norms.add(norm)
-            cleaned.append(item)
-            if len(cleaned) >= 6:
-                break
-        results[key] = cleaned
-
-    return results
-
-
-def extract_judgment_outcome(text: str) -> str:
+def detect_rights(text: str) -> List[Dict]:
+    """Detect which fundamental rights are mentioned or implicated in the judgment."""
+    found = []
     text_lower = text.lower()
-    patterns = [
-        (r'\bappeals?\s+(?:stand[s]?\s+)?dismissed\b',     "Appeal Dismissed ❌"),
-        (r'\bappeal\s+is\s+(?:hereby\s+)?allowed\b',        "Appeal Allowed ✅"),
-        (r'\bappeals?\s+(?:are\s+|hereby\s+)?allowed\b',    "Appeal Allowed ✅"),
-        (r'\bpetition\s+is\s+(?:hereby\s+)?allowed\b',      "Petition Allowed ✅"),
-        (r'\bpetition\s+(?:stand[s]?\s+)?dismissed\b',      "Petition Dismissed ❌"),
-        (r'\bsuit\s+(?:is\s+|stand[s]?\s+)?dismissed\b',    "Suit Dismissed ❌"),
-        (r'\bmatter\s+is\s+remanded\b',                      "Remanded to Lower Court 🔄"),
-        (r'\bremanded\s+back\b',                             "Remanded to Lower Court 🔄"),
-        (r'\bconviction\s+(?:is\s+)?set\s+aside\b',         "Conviction Set Aside ✅"),
-        (r'\bconviction\s+upheld\b',                         "Conviction Upheld ❌"),
-        (r'\bpartly\s+allowed\b',                            "Partly Allowed ⚖️"),
-        (r'\bsettled\b',                                     "Settled 🤝"),
+
+    for article, (name, explanation) in FUNDAMENTAL_RIGHTS.items():
+        article_lower = article.lower()
+        article_num = article.replace("Article ", "")
+
+        if (article_lower in text_lower or
+            f"article {article_num}" in text_lower or
+            f"art. {article_num}" in text_lower or
+            f"art {article_num}" in text_lower):
+            found.append({
+                "article": article,
+                "name": name,
+                "explanation": explanation,
+            })
+
+    return found
+
+
+def calculate_appeal_deadline(case_type: str, judgment_date_str: str) -> Dict:
+    """Calculate appeal deadline from judgment date and case type."""
+    deadline_info = APPEAL_DEADLINES.get(case_type, APPEAL_DEADLINES["Civil"])
+
+    # Try to parse judgment date
+    judgment_date = None
+    date_formats = [
+        "%d %B %Y", "%B %d, %Y", "%d/%m/%Y",
+        "%d-%m-%Y", "%Y-%m-%d", "%d %b %Y",
     ]
-    for pattern, label in patterns:
-        if re.search(pattern, text_lower):
-            return label
-    return "Outcome unclear — check judgment order"
+
+    # Clean the date string
+    date_str = judgment_date_str.strip() if judgment_date_str else ""
+    for fmt in date_formats:
+        try:
+            judgment_date = datetime.strptime(date_str, fmt)
+            break
+        except ValueError:
+            continue
+
+    if judgment_date:
+        deadline = judgment_date + timedelta(days=deadline_info["days"])
+        today = datetime.now()
+        days_left = (deadline - today).days
+
+        return {
+            "found_date": True,
+            "judgment_date": judgment_date.strftime("%d %B %Y"),
+            "deadline_date": deadline.strftime("%d %B %Y"),
+            "days_left": days_left,
+            "deadline_days": deadline_info["days"],
+            "appeal_court": deadline_info["court"],
+            "section": deadline_info["section"],
+            "note": deadline_info["note"],
+            "status": "expired" if days_left < 0 else "urgent" if days_left < 15 else "active",
+        }
+    else:
+        return {
+            "found_date": False,
+            "deadline_days": deadline_info["days"],
+            "appeal_court": deadline_info["court"],
+            "section": deadline_info["section"],
+            "note": deadline_info["note"],
+            "status": "unknown",
+        }
+
+
+def detect_red_flags(text: str, chunks: List[Dict]) -> Dict:
+    """Detect procedural red flags in the judgment."""
+    from groq import RateLimitError
+    import time
+
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    context = "\n\n".join([c["content"][:400] for c in chunks[:4]])
+
+    prompt = f"""You are a legal analyst reviewing an Indian court judgment for procedural concerns.
+
+JUDGMENT TEXT:
+{context}
+
+Analyze for: ex-parte orders, unexplained delays, inconsistent application of law, vague allegations accepted without scrutiny, contradictory findings, procedural violations, insufficient evidence.
+
+Respond ONLY with valid JSON (no markdown):
+{{
+  "danger_score": <integer 0-100, where 0=perfectly fair, 100=severely concerning>,
+  "flags": [
+    {{"issue": "short title", "detail": "one sentence explanation", "severity": "high|medium|low"}}
+  ],
+  "overall_assessment": "one plain English sentence about fairness",
+  "positive_observations": ["one thing court did right", "another positive"]
+}}
+
+Be objective. Empty flags array if no issues found."""
+
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    for i, model in enumerate(models):
+        if i > 0:
+            time.sleep(8)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.2,
+            )
+            raw = response.choices[0].message.content.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            return json.loads(raw)
+        except RateLimitError:
+            continue
+        except Exception:
+            break
+
+    return {
+        "danger_score": 0,
+        "flags": [],
+        "overall_assessment": "Analysis unavailable — rate limit reached. Try again in a moment.",
+        "positive_observations": [],
+    }
