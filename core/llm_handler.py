@@ -38,10 +38,14 @@ def _call_gemini(messages: list, max_tokens: int, temperature: float = 0.3) -> s
             temperature=temperature,
         )
     )
-    # Convert OpenAI-style messages to single prompt for Gemini
-    prompt = "\n\n".join(
-        f"{m['role'].upper()}: {m['content']}" for m in messages
-    )
+    # Gemini doesn't use system role — prepend system content to first user message
+    parts = []
+    for m in messages:
+        if m["role"] == "system":
+            parts.insert(0, f"INSTRUCTIONS: {m['content']}\n\n")
+        else:
+            parts.append(m["content"])
+    prompt = "\n".join(parts)
     response = model.generate_content(prompt)
     return response.text.strip()
 
@@ -147,26 +151,55 @@ YOU MUST respond ONLY with a valid JSON object. No explanation before or after. 
   "important_warning": "one friendly reminder to consult a lawyer"
 }}"""
 
-    raw = _call_llm([{"role": "user", "content": prompt}], max_tokens=900)
+    messages = [
+        {"role": "system", "content": "You are a JSON API. You output ONLY valid JSON with no explanation, no markdown, no code fences. Your entire response must be parseable by json.loads()."},
+        {"role": "user", "content": prompt}
+    ]
+    raw = _call_llm(messages, max_tokens=900)
     cleaned = _clean_json(raw)
 
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # Second attempt: try to fix common JSON issues
+        # Second attempt: fix trailing commas
         try:
-            # Sometimes model adds trailing commas
             fixed = re.sub(r',\s*([}\]])', r'\1', cleaned)
             return json.loads(fixed)
         except Exception:
-            return {
-                "case_type": "Unknown",
-                "plain_summary": "Summary could not be parsed. Please try again.",
-                "key_issues": [],
-                "what_court_decided": "",
-                "next_steps": [],
-                "important_warning": "Please consult a qualified lawyer for advice specific to your situation.",
-            }
+            pass
+
+    # Third attempt: try to extract fields manually from raw text
+    # This handles cases where model returns JSON with unescaped quotes inside strings
+    try:
+        # Replace newlines inside strings before parsing
+        cleaned2 = re.sub(r'\n', ' ', cleaned)
+        cleaned2 = re.sub(r',\s*([}\]])', r'\1', cleaned2)
+        return json.loads(cleaned2)
+    except Exception:
+        pass
+
+    # Last resort: return raw text as plain summary so user sees something useful
+    # Strip any JSON-like wrapper if present
+    summary_text = raw
+    for key in ['"plain_summary":', 'plain_summary:']:
+        if key in raw:
+            try:
+                start = raw.index(key) + len(key)
+                chunk = raw[start:].strip().lstrip('"').lstrip("'")
+                end = chunk.index('"')
+                summary_text = chunk[:end]
+                break
+            except Exception:
+                pass
+
+    return {
+        "case_type": "Unknown",
+        "plain_summary": summary_text[:800] if len(summary_text) > 10 else "Could not generate summary — please try again.",
+        "key_issues": [],
+        "what_court_decided": "",
+        "next_steps": [],
+        "important_warning": "Please consult a qualified lawyer for advice specific to your situation.",
+    }
 
 
 def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
@@ -188,7 +221,11 @@ YOU MUST respond ONLY with a valid JSON array. No explanation before or after. S
 ]
 Types: jurisdiction, fact, issue, argument, law, decision, appeal only. 5-7 steps total."""
 
-    raw = _call_llm([{"role": "user", "content": prompt}], max_tokens=800, temperature=0.2)
+    messages = [
+        {"role": "system", "content": "You are a JSON API. Output ONLY a valid JSON array. No explanation, no markdown, no code fences."},
+        {"role": "user", "content": prompt}
+    ]
+    raw = _call_llm(messages, max_tokens=800, temperature=0.2)
     cleaned = _clean_json(raw)
 
     try:
