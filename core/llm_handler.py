@@ -208,25 +208,6 @@ JSON only (no markdown, start with {{):
 
 
 def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
-    context = "\n\n".join([c["content"][:500] for c in chunks[:4]])
-
-    prompt = f"""Analyze this Indian court judgment and extract the judge's step-by-step reasoning and jurisdiction path.
-
-JUDGMENT TEXT:
-{context}
-
-YOU MUST respond ONLY with a valid JSON array. No explanation before or after. Start with [ and end with ]:
-[
-  {{"step": 1, "label": "3-5 word title", "detail": "one plain English sentence", "type": "jurisdiction"}},
-  {{"step": 2, "label": "3-5 word title", "detail": "one plain English sentence", "type": "fact"}},
-  {{"step": 3, "label": "3-5 word title", "detail": "one plain English sentence", "type": "issue"}},
-  {{"step": 4, "label": "3-5 word title", "detail": "one plain English sentence", "type": "argument"}},
-  {{"step": 5, "label": "3-5 word title", "detail": "one plain English sentence", "type": "decision"}},
-  {{"step": 6, "label": "Further Appeal", "detail": "If aggrieved, the party may approach [court] under [Article/provision].", "type": "appeal"}}
-]
-Types: jurisdiction, fact, issue, argument, law, decision, appeal only. 5-7 steps total."""
-
-def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
     context = "\n\n".join([c["content"][:400] for c in chunks[:3]])
 
     prompt = f"""Analyze this Indian court judgment. Return 6 reasoning steps as a JSON array.
