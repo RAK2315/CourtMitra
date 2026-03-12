@@ -34,9 +34,12 @@ PERSON_NOISE_WORDS = {
     "bharat", "hindustan", "india",
     "kanpur", "lucknow", "mumbai", "delhi", "chennai", "kolkata",
     "moradabad", "gwalior", "nagpur", "patna", "agra", "varanasi",
-    # Common English words that appear in legal text
+    # Common English/legal words misread as persons
     "body", "cane", "sugar", "state", "party", "board", "trust",
-    "fund", "bank", "union", "authority",
+    "fund", "bank", "union", "authority", "principles", "principle",
+    "commission", "committee", "tribunal", "forum", "bench",
+    "division", "single", "full", "larger", "constitution",
+    "government", "ministry", "department", "directorate",
 }
 
 ORG_NOISE_WORDS = {
@@ -79,13 +82,15 @@ def _is_org_noise(org: str) -> bool:
         return True
     if org.isupper() and len(org) > 25:
         return True
-    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor", "State"}:
+    if org.strip() in {"Date", "No", "No.", "J", "J.", "Facts", "FACTS", "Motor", "State", "Bench"}:
+        return True
+    # Single all-caps word = legal citation abbreviation or name fragment (FACLR, REDDY, BENCH)
+    if re.match(r'^[A-Z]{3,12}$', org.strip()):
         return True
     if re.search(r'\([A-Z]$', org):
         return True
     if re.match(r'(?:original\s+suit|civil\s+suit|criminal\s+case)\s+no', o):
         return True
-    # All-caps two-word entity with no company suffix = likely a person name
     words = org.strip().split()
     if (org.isupper() and len(words) == 2
             and all(w.isalpha() for w in words)
@@ -142,23 +147,30 @@ CITED_CASE_PATTERNS = [
 ]
 
 AMOUNT_PATTERNS = [
+    # Comma-formatted: Rs.2,000/- or Rs.1,00,000  (capital Rs only)
     r'Rs\.?\s*\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?:/-)?',
+    # 4+ digits: Rs.5000 or Rs.50000
     r'Rs\.?\s*\d{4,}(?:\.\d{1,2})?(?:/-)?',
+    # With unit: Rs.5 lakhs / Rs.2 crores
     r'Rs\.?\s*\d+(?:\.\d{2})?\s*(?:lakhs?|crores?)',
     r'₹\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?',
     r'₹\s*\d{4,}',
     r'INR\s+\d{4,}',
-    # Pay scale format: Rs. 210-270
-    r'Rs\.?\s*\d{3,}-\d{3,}',
+    # Pay scale: Rs. 210-270 or Rs.260-400 — capital Rs, 3-digit ranges only
+    r'Rs\.?\s*\d{3,4}-\d{3,4}\b',
 ]
 
 DATE_PATTERNS = [
+    # 22 February, 1982 or 1st January, 1973
     r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|'
     r'July|August|September|October|November|December),?\s+\d{4}\b',
-    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
+    # DD/MM/YYYY only — NOT DD-MM-YYYY (avoids matching pay scale ranges like 8-350)
+    r'\b\d{1,2}/\d{1,2}/\d{2,4}\b',
+    # Month DD, YYYY: February 22, 1982
     r'\b(?:January|February|March|April|May|June|July|August|September|'
     r'October|November|December)\s+\d{1,2},?\s+\d{4}\b',
-    r'\b\d{4}-\d{2}-\d{2}\b',
+    # ISO: 2024-03-12
+    r'\b20\d{2}-\d{2}-\d{2}\b',
 ]
 
 
@@ -181,11 +193,19 @@ def extract_entities(text: str) -> Dict:
     for ent in doc.ents:
         if ent.label_ == "PERSON":
             name = ent.text.strip()
-            if not _is_person_noise(name) and name.lower() not in seen_p:
-                seen_p.add(name.lower())
-                persons.append(name)
-                if len(persons) >= 7:
-                    break
+            if not _is_person_noise(name):
+                # Normalize for dedup: lowercase, collapse spaces
+                norm = re.sub(r'\s+', ' ', name.lower())
+                # Check if this name is a substring of an already-seen name (O. CHINNAPPA vs O. Chinnappa Reddy)
+                already_covered = any(
+                    norm in seen or seen in norm
+                    for seen in seen_p
+                )
+                if not already_covered:
+                    seen_p.add(norm)
+                    persons.append(name)
+                    if len(persons) >= 7:
+                        break
 
     orgs, seen_o = [], set()
     for ent in doc.ents:
@@ -224,8 +244,10 @@ def extract_entities(text: str) -> Dict:
     for p in CITED_CASE_PATTERNS:
         results["cited_cases"].extend(re.findall(p, text, re.IGNORECASE))
 
-    for p in AMOUNT_PATTERNS:
-        results["monetary_amounts"].extend(re.findall(p, text, re.IGNORECASE))
+    for p in AMOUNT_PATTERNS[:6]:  # Rs. and ₹ patterns — no IGNORECASE (Rs must be capital)
+        results["monetary_amounts"].extend(re.findall(p, text))
+    # Pay scale pattern separately
+    results["monetary_amounts"].extend(re.findall(AMOUNT_PATTERNS[6], text))
 
     for p in DATE_PATTERNS:
         results["key_dates"].extend(re.findall(p, text, re.IGNORECASE))
@@ -234,19 +256,29 @@ def extract_entities(text: str) -> Dict:
     for key in results:
         if not isinstance(results[key], list):
             continue
-        seen_norms, cleaned = set(), []
+        seen_norms, cleaned_list = set(), []
         for item in results[key]:
             item = item.strip()
             if not item or len(item) <= 2:
                 continue
             norm = _normalize(item)
+
+            # For statutes: normalize Art./Article so Art. 32 == Article 32
+            if key == "statutes":
+                norm = re.sub(r'\bart\.?\s+', 'article ', norm)
+                norm = re.sub(r'\s+', ' ', norm).strip()
+
+            # For amounts: normalize Rs./Rs so Rs. 210-270 == Rs.210-270
+            if key == "monetary_amounts":
+                norm = re.sub(r'rs\.?\s*', 'rs ', norm).strip()
+
             if any(norm[:28] == s[:28] for s in seen_norms):
                 continue
             seen_norms.add(norm)
-            cleaned.append(item)
-            if len(cleaned) >= 6:
+            cleaned_list.append(item)
+            if len(cleaned_list) >= 6:
                 break
-        results[key] = cleaned
+        results[key] = cleaned_list
 
     return results
 

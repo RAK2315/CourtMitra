@@ -221,23 +221,61 @@ YOU MUST respond ONLY with a valid JSON array. No explanation before or after. S
 ]
 Types: jurisdiction, fact, issue, argument, law, decision, appeal only. 5-7 steps total."""
 
+def build_reasoning_chain(chunks: List[Dict]) -> List[Dict]:
+    context = "\n\n".join([c["content"][:500] for c in chunks[:4]])
+
+    prompt = f"""Analyze this Indian court judgment and extract the judge's reasoning as 6 steps.
+
+JUDGMENT TEXT:
+{context}
+
+Return a JSON array with exactly 6 objects. Each detail must be a FULL sentence of 15-25 words explaining what actually happened in THIS case.
+
+Rules for detail field:
+- Use actual names, facts, articles from the judgment
+- Do NOT use placeholder text like "Court established jurisdiction"
+- Each detail must be specific to this case
+
+Types to use in order: jurisdiction, fact, issue, law, decision, appeal
+
+Example of GOOD detail: "Randhir Singh filed Writ Petition No. 4676 of 1978 under Article 32 directly in the Supreme Court."
+Example of BAD detail: "Court established jurisdiction over the matter."
+
+JSON array format:
+[
+  {{"step": 1, "label": "short title", "detail": "specific sentence about this case", "type": "jurisdiction"}},
+  {{"step": 2, "label": "short title", "detail": "specific sentence about this case", "type": "fact"}},
+  {{"step": 3, "label": "short title", "detail": "specific sentence about this case", "type": "issue"}},
+  {{"step": 4, "label": "short title", "detail": "specific sentence about this case", "type": "law"}},
+  {{"step": 5, "label": "short title", "detail": "specific sentence about this case", "type": "decision"}},
+  {{"step": 6, "label": "Further Appeal Avenue", "detail": "specific sentence about appeal options from this judgment", "type": "appeal"}}
+]"""
+
     messages = [
-        {"role": "system", "content": "You are a JSON API. Output ONLY a valid JSON array. No explanation, no markdown, no code fences."},
+        {"role": "system", "content": "You are a JSON API. Output ONLY a valid JSON array. No explanation, no markdown, no code fences. Use only straight double quotes. Do not use quotes inside string values."},
         {"role": "user", "content": prompt}
     ]
-    raw = _call_llm(messages, max_tokens=800, temperature=0.2)
+    raw = _call_llm(messages, max_tokens=900, temperature=0.2)
     cleaned = _clean_json(raw)
 
-    try:
-        return json.loads(cleaned)
-    except Exception:
-        return [
-            {"step": 1, "label": "Jurisdiction", "detail": "Court established jurisdiction over the matter.", "type": "jurisdiction"},
-            {"step": 2, "label": "Facts Presented", "detail": "Parties presented their respective facts.", "type": "fact"},
-            {"step": 3, "label": "Legal Issues", "detail": "Court identified the core legal questions.", "type": "issue"},
-            {"step": 4, "label": "Law Applied", "detail": "Relevant statutes and precedents considered.", "type": "law"},
-            {"step": 5, "label": "Final Order", "detail": "Court delivered its judgment.", "type": "decision"},
-        ]
+    # Multiple parse attempts
+    for attempt in [
+        cleaned,
+        re.sub(r',\s*([}\]])', r'\1', cleaned),           # fix trailing commas
+        re.sub(r'\n\s*', ' ', cleaned),                     # collapse newlines
+        re.sub(r'(?<!\\)"(?=[^:,\[\]{}])', '\\"', cleaned), # escape inner quotes
+    ]:
+        try:
+            result = json.loads(attempt)
+            if isinstance(result, list) and len(result) > 0:
+                return result
+        except Exception:
+            continue
+
+    # Final fallback — should rarely hit this now
+    return [
+        {"step": 1, "label": "Jurisdiction", "detail": "Could not parse reasoning chain — try reloading the page.", "type": "jurisdiction"},
+    ]
 
 
 def answer_question(question: str, chunks: List[Dict], full_text: str = "", language: str = "English") -> str:
@@ -266,23 +304,34 @@ Answer in 2-5 sentences. Quote specific figures if present. No legal advice."""
 
 
 def extract_legal_terms(text: str) -> Dict:
-    """Extract hard legal terms from judgment and explain in plain English."""
+    """Extract genuinely hard legal terms from judgment — skip well-known ones."""
     sample = text[:3000]
 
-    prompt = f"""You are CourtMitra. Extract up to 10 difficult legal terms or Latin phrases from this Indian court judgment and explain each in plain simple English (1 sentence each). Focus on terms a non-lawyer would not understand.
+    prompt = f"""You are CourtMitra. Extract up to 8 genuinely obscure legal terms, Latin phrases, or case-specific jargon from this Indian court judgment. Explain each in one plain simple English sentence.
+
+SKIP these common ones — they are already in our reference section:
+- Article numbers (Article 14, 21, 32 etc.)
+- SCC, AIR, SC, HC, CPC, IPC, CrPC, SLP
+- petition, appeal, writ, order, judgment, decree, affidavit
+
+FOCUS on things like:
+- Latin phrases: ex parte, res judicata, locus standi, inter alia, suo motu
+- Obscure procedural jargon: doctrine of parity, equal protection, directive principle
+- Case-specific abbreviations: EB (Efficiency Bar in pay scales), N.T. Driver
+- Domain terms specific to this case type
 
 JUDGMENT TEXT:
 {sample}
 
-YOU MUST respond ONLY with valid JSON. No text before or after. Start with {{ end with }}:
+YOU MUST respond ONLY with valid JSON. No text before or after:
 {{
   "terms": [
-    {{"term": "Ex parte", "explanation": "A decision made without hearing one side of the case."}},
-    {{"term": "Writ of Mandamus", "explanation": "A court order telling a government body to do something it is legally required to do."}}
+    {{"term": "Directive Principle", "explanation": "A constitutional guideline directing the government toward social justice — not directly enforceable in court but used to interpret laws."}},
+    {{"term": "Doctrine of Parity", "explanation": "The legal principle that employees doing identical work must receive the same pay, regardless of which department they belong to."}}
   ]
 }}
 
-Only include terms actually present in the text. Return empty array if no hard terms found."""
+Return empty terms array if no genuinely obscure terms are found."""
 
     raw = _call_llm([{"role": "user", "content": prompt}], max_tokens=600, temperature=0.2)
     cleaned = _clean_json(raw)

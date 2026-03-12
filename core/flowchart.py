@@ -33,7 +33,7 @@ def build_mermaid_flowchart(reasoning_steps: List[Dict]) -> str:
 
         # Escape quotes in label
         label_clean = label.replace('"', "'")
-        detail_clean = detail.replace('"', "'")[:80]
+        detail_clean = detail.replace('"', "'")
 
         lines.append(f'    {node_id}["{emoji} {label_clean}<br/><small>{detail_clean}</small>"]')
         lines.append(f'    class {node_id} {step_type}')
@@ -83,7 +83,7 @@ def build_html_flowchart(reasoning_steps: List[Dict]) -> str:
                 ">{type_label}</span>
                 <span style="font-size:15px;font-weight:700;color:#fff;">{label}</span>
             </div>
-            <div style="color:#ccc;font-size:13px;line-height:1.5;padding-left:30px;">{detail}</div>
+            <div style="color:#ccc;font-size:14px;line-height:1.6;padding-left:30px;">{detail}</div>
         </div>
         {arrow}
         """
